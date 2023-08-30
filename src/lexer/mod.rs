@@ -38,34 +38,53 @@ impl Lexer {
                 '+' => self.tokens.write_one(self.token_from_type(TokenType::Plus)),
                 '-' => self.tokens.write_one(self.token_from_type(TokenType::Minus)),
                 '*' => self.tokens.write_one(self.token_from_type(TokenType::Star)),
+                '(' => self.tokens.write_one(self.token_from_type(TokenType::LeftParen)),
+                ')' => self.tokens.write_one(self.token_from_type(TokenType::RightParen)),
+                '=' => self.tokens.write_one(self.token_from_type(TokenType::Equals)),
+                ',' => self.tokens.write_one(self.token_from_type(TokenType::Comma)),
+                '<' => self.tokens.write_one(self.token_from_type(TokenType::LeftAngle)),
+                '>' => self.tokens.write_one(self.token_from_type(TokenType::RightAngle)),
+                '/' => self.tokens.write_one(self.token_from_type(TokenType::Slash)),
+                '!' => {
+                    self.file.read(&mut c).unwrap();
+                    self.file.set_position(self.file.position()-1);
+                    if c[0] == b'=' {
+                        self.tokens.write_one(self.token_from_type(TokenType::BangEqual));
+                    } else {
+                        errored.1.push_str(self.error(1,
+                            "Unrecognized character \"!\"".to_string(), 0, None
+                        ).as_str());
+                    }
+                }
+                '\r' | '\t' => self.tokens.write_one(self.token_from_type(TokenType::Tab)),
                 '#' => {
                     self.file.read_until(b'\n', &mut Vec::new()).unwrap();
-                    self.line += 1;
-                    self.tokens.write_one(self.token_from_type(TokenType::Star))
-                }
-                '{' => {
-                    self.file.set_position(self.file.position()-1);
-                    self.process_variable()
-                }
-                '"' => {
-                    self.file.set_position(self.file.position()-1);
-                    self.process_string()
-                }
-                '\n' => {
                     self.line_start = self.file.position();
                     self.line += 1;
                 }
+                '{' => {
+                    self.process_variable().unwrap_or_else(|e| { errored.1.push_str(&e); errored.0 = true; });
+                }
+                '"' => {
+                    self.process_string().unwrap_or_else(|e| { errored.1.push_str(&e); errored.0 = true; });
+                }
+                '\n' => {
+                    self.tokens.write_one(self.token_from_type(TokenType::Newline));
+                    self.line_start = self.file.position();
+                    self.line += 1;
+                }
+                ' ' => {}
                 c => {
                     if c.is_ascii_digit() {
                         self.file.set_position(self.file.position()-1);
-                        self.process_number().unwrap_or_else(|e| errored.1.push_str(&e));
-                        errored.0 = true;
+                        self.process_number().unwrap_or_else(|e| { errored.1.push_str(&e); errored.0 = true; });
+                        
                     } else if c.is_ascii_alphabetic() {
                         self.file.set_position(self.file.position()-1);
                         self.identifier();
                     } else {
-                        errored.1.push_str(self.error(
-                            format!("Unrecognized character \"{}\"", c), None
+                        errored.1.push_str(self.error(1,
+                            format!("Unrecognized character \"{}\"", c), 0, None
                         ).as_str());
                         errored.0 = true;
                     }
@@ -86,37 +105,40 @@ impl Lexer {
         }
     }
 
-    fn process_variable(&mut self) {
+    fn process_variable(&mut self) -> Result<(), String> {
         let mut name = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
         while c[0] != b'}' {
             name.push(c[0] as char);
             if c[0] == b'\n' {
+                self.tokens.write_one(self.token_from_type(TokenType::Newline));
                 self.line_start = self.file.position();
                 self.line += 1;
-                break;
+                return Err(self.error(2, "Unexpected end of line".to_string(), 1, Some("help: remove new line".to_string())));
             };
             self.file.read(&mut c).unwrap();
         }
 
         self.tokens.write_one(self.token_from_type(TokenType::Variable(name)));
+        Ok(())
     }
-    fn process_string(&mut self) {
+    fn process_string(&mut self) -> Result<(), String> {
         let mut name = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
         while c[0] != b'"' {
             name.push(c[0] as char);
             if c[0] == b'\n' {
-                self.line_start = self.file.position();
-                self.line += 1;
-                break;
+                self.tokens.write_one(self.token_from_type(TokenType::Newline));
+                self.file.set_position(self.file.position()-1);
+                return Err(self.error(2, "Unexpected end of line".to_string(), 1, Some("help: remove new line".to_string())));
             };
             self.file.read(&mut c).unwrap();
         }
 
-        self.tokens.write_one(self.token_from_type(TokenType::Variable(name)));
+        self.tokens.write_one(self.token_from_type(TokenType::Text(name)));
+        Ok(())
     }
     fn process_number(&mut self) -> Result<(), String> {
         let mut number = String::new();
@@ -137,7 +159,7 @@ impl Lexer {
             }
             else {
                 self.file.set_position(self.file.position()+1);
-                return Err(self.error("Unexpected end of number".to_string(), Some("help: remove trailing decimal point".to_string())));
+                return Err(self.error(3, "Unexpected end of number".to_string(), 0, Some("help: remove trailing decimal point".to_string())));
             }
         }
         self.file.set_position(self.file.position()-1);
@@ -149,7 +171,7 @@ impl Lexer {
         let mut ident = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
-        while c[0].is_ascii_alphabetic() {
+        while c[0].is_ascii_alphabetic() || c[0] == b'\'' {
             ident.push(c[0] as char);
             self.file.read(&mut c).unwrap();
         }
@@ -157,7 +179,7 @@ impl Lexer {
 
         self.tokens.write_one(self.token_from_type(TokenType::Ident(ident)));
     }
-    fn error(&self, message: String, help: Option<String>) -> String {
+    fn error(&self, code: u32, message: String, offset: i32, help: Option<String>) -> String {
         let add = match self.file.clone().read_until(b'\n', &mut Vec::new()) {
             Ok(a) => a,
             Err(e) => {
@@ -170,14 +192,32 @@ impl Lexer {
         }; 
         let line_end = self.file.position() + add as u64;
         let line_space: String = vec![' '; self.line.to_string().len() as usize].into_iter().collect();
-        let column = self.file.position()-self.line_start;
-        let column_space: String = vec![' '; column as usize].into_iter().collect();
-        format!("\x1b[1;91merror\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
-              \x1b[1;94m{2} |\x1b[0m  {}\n\
-              \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", message, self.filename, self.line+1, 
+        let mut start = self.line_start;
+        loop {
+            match self.file.clone().into_inner()[start as usize] {
+                b'\r' | b'\t' | b'\n' => {start += 1}
+                _ => break
+            }
+        }
+        let column = self.file.position()-start;
+        let column_space: String;
+        if offset.signum() == -1 {
+            column_space = vec![' '; column as usize - (-offset) as usize].into_iter().collect();
+        } else {
+            column_space = vec![' '; column as usize + offset as usize].into_iter().collect();
+        }
+        format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
+              \x1b[1;94m{3} |\x1b[0m  {}\n\
+              \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, self.line+1, 
               String::from_utf8(self.file.clone().into_inner()[self.line_start as usize..line_end as usize].into()).unwrap().trim(),
               line_space, column_space, help.unwrap_or("".to_string()),
         )
+        /*format!("\x1b[1;91mLine {}: \x1b[0m({})\n\
+            \t\x1b[0;91m{}\n\
+            \t\x1b[0;33mLine: \x1b[0m{}\n\n",
+              self.line, self.filename, message, 
+              String::from_utf8(self.file.clone().into_inner()[self.line_start as usize..line_end as usize].into()).unwrap().trim(),
+        )*/
     }
 }
 

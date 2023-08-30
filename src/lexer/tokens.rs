@@ -4,11 +4,10 @@ use std::io::{self, Error, ErrorKind};
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum TokenType {
-    Colon, Percent, Plus, Minus, Star, Hashtag,
+    Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Tab, Newline,
+    Equals, Comma, BangEqual, Slash, LeftAngle, RightAngle,
 
-    Ident(String), Number(f64), Text, Variable(String),
-
-    If, Is, Loop, Set, To, While,
+    Ident(String), Number(f64), Text(String), Variable(String),
 
     EOF,
 }
