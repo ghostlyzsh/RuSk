@@ -4,7 +4,10 @@ use anyhow::Result;
 use argh::FromArgs;
 use lexer::Lexer;
 
-mod lexer;
+use crate::parser::Parser;
+
+pub(crate) mod lexer;
+pub(crate) mod parser;
 
 #[derive(FromArgs)]
 /// A compiler for skript
@@ -18,8 +21,7 @@ fn main() -> Result<()> {
 
     let contents = std::fs::read_to_string(options.file.clone())?;
 
-    let now = Instant::now();
-    let mut lexer = Lexer::new(options.file, contents);
+    let mut lexer = Lexer::new(options.file.clone(), contents.clone());
     match lexer.process() {
         Ok(_) => {}
         Err(e) => {
@@ -27,8 +29,18 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    let elapsed_time = now.elapsed();
     println!("Tokens: {:#?}", lexer.tokens);
+    let mut parser = Parser::new(lexer.tokens, options.file, contents);
+    let now = Instant::now();
+    match parser.parse() {
+        Ok(_) => {}
+        Err(e) => {
+            eprint!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let elapsed_time = now.elapsed();
+    println!("{:#?}", parser.exprs);
     println!("Took {} us", elapsed_time.as_micros());
     Ok(())
 }

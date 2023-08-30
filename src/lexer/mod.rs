@@ -2,7 +2,6 @@ use std::io::{Cursor, Read, BufRead, ErrorKind};
 
 use self::tokens::{Tokens, Token, TokenType};
 
-
 pub struct Lexer {
     pub tokens: Tokens,
     pub file: Cursor<Vec<u8>>,
@@ -37,23 +36,45 @@ impl Lexer {
                 '%' => self.tokens.write_one(self.token_from_type(TokenType::Percent)),
                 '+' => self.tokens.write_one(self.token_from_type(TokenType::Plus)),
                 '-' => self.tokens.write_one(self.token_from_type(TokenType::Minus)),
-                '*' => self.tokens.write_one(self.token_from_type(TokenType::Star)),
+                '*' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'*' {
+                        self.tokens.write_one(self.token_from_type(TokenType::Exp));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::Star));
+                    }
+                },
                 '(' => self.tokens.write_one(self.token_from_type(TokenType::LeftParen)),
                 ')' => self.tokens.write_one(self.token_from_type(TokenType::RightParen)),
                 '=' => self.tokens.write_one(self.token_from_type(TokenType::Equals)),
                 ',' => self.tokens.write_one(self.token_from_type(TokenType::Comma)),
-                '<' => self.tokens.write_one(self.token_from_type(TokenType::LeftAngle)),
-                '>' => self.tokens.write_one(self.token_from_type(TokenType::RightAngle)),
+                '<' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'=' {
+                        self.tokens.write_one(self.token_from_type(TokenType::LessEqual));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::LeftAngle));
+                    }
+                }
+                '>' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'=' {
+                        self.tokens.write_one(self.token_from_type(TokenType::GreaterEqual));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::RightAngle));
+                    }
+                }
                 '/' => self.tokens.write_one(self.token_from_type(TokenType::Slash)),
                 '!' => {
                     self.file.read(&mut c).unwrap();
-                    self.file.set_position(self.file.position()-1);
                     if c[0] == b'=' {
                         self.tokens.write_one(self.token_from_type(TokenType::BangEqual));
                     } else {
-                        errored.1.push_str(self.error(1,
-                            "Unrecognized character \"!\"".to_string(), 0, None
-                        ).as_str());
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::Bang));
                     }
                 }
                 '\r' | '\t' => self.tokens.write_one(self.token_from_type(TokenType::Tab)),
@@ -98,10 +119,20 @@ impl Lexer {
     }
 
     fn token_from_type(&self, token_type: TokenType) -> Token {
+        let mut start = self.line_start;
+        loop {
+            match self.file.clone().into_inner()[start as usize] {
+                b'\r' | b'\t' | b'\n' => {start += 1}
+                _ => break
+            }
+        }
+        let column = (self.file.position()).abs_diff(start);
         Token {
             token_type,
             line: self.line,
+            column,
             lexeme: String::from_utf8(self.file.clone().into_inner()[self.start as usize..self.file.position() as usize].to_vec()).unwrap(),
+            index: self.file.position(),
         }
     }
 
@@ -177,7 +208,13 @@ impl Lexer {
         }
         self.file.set_position(self.file.position()-1);
 
-        self.tokens.write_one(self.token_from_type(TokenType::Ident(ident)));
+        if ident == "false" {
+            self.tokens.write_one(self.token_from_type(TokenType::Boolean(false)));
+        } else if ident == "true" {
+            self.tokens.write_one(self.token_from_type(TokenType::Boolean(true)));
+        } else {
+            self.tokens.write_one(self.token_from_type(TokenType::Ident(ident)));
+        }
     }
     fn error(&self, code: u32, message: String, offset: i32, help: Option<String>) -> String {
         let add = match self.file.clone().read_until(b'\n', &mut Vec::new()) {
@@ -222,4 +259,4 @@ impl Lexer {
 }
 
 
-mod tokens;
+pub(crate) mod tokens;
