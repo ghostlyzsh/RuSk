@@ -179,7 +179,10 @@ impl Lexer {
     fn token_from_type(&self, token_type: TokenType) -> Token {
         let mut start = self.line_start;
         loop {
-            match self.file.clone().into_inner()[start as usize] {
+            match match self.file.clone().into_inner().get(start as usize) {
+                Some(s) => s,
+                None => {break}
+            } {
                 b'\r' | b'\t' | b'\n' => {start += 1}
                 _ => break
             }

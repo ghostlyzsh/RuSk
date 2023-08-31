@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, Error};
 
 use crate::lexer::tokens::{Tokens, TokenType, Token, TokenError};
 
-use self::ptr::P;
+use self::{ptr::P, error::ParserError};
 
 pub struct Parser {
     pub tokens: Tokens,
@@ -28,17 +28,14 @@ impl Parser {
                     self.exprs.push(P(tree));
                 }
                 Err(e) => {
-                    let message = e.to_string();
-                    match e.downcast::<TokenError>() {
+                    match e.downcast::<ParserError>() {
                         Ok(e) => {
-                            errored.1.push_str(&self.error_tok(1004, "Unexpected end of file".to_string(), None, e).to_string());
+                            errored.1.push_str(&e.into_string());
                             errored.0 = true;
                             break;
                         }
                         Err(_) => {
-                            errored.1.push_str(&message);
-                            errored.0 = true;
-                            continue;
+                            panic!("Parser broke");
                         }
                     };
                 }
@@ -80,11 +77,17 @@ impl Parser {
         let token = self.tokens.read()?;
         if let TokenType::Ident(i) = token.clone().token_type {
             if i == "if" {
-                let condition = self.expression()?;
+                let condition = match self.expression() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        return Err(self.error(1002, "Expected condition".to_string(), None, 1, token))
+                    }
+                };
                 let colon = self.tokens.read()
                     .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
                 if let TokenType::Colon = colon.token_type {
                     self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
+                    println!("here");
                     self.consume(TokenType::Indent, "Expected indent after \"if\"".to_string())?;
                     let expr = self.block()?;
                     // placeholder if return
@@ -414,7 +417,7 @@ impl Parser {
             Err(e) => {
                 match e.downcast::<TokenError>() {
                     Ok(e) => {
-                        return Err(self.error_tok(1004, "Unexpected end of file".to_string(), None, e))
+                        return Err(self.error_tok(1002, message, None, e))
                     }
                     Err(_) => {
                         panic!("Parser broke");
@@ -428,42 +431,55 @@ impl Parser {
     }
     
     pub fn error(&mut self, code: u32, message: String, help: Option<String>, offset: i32, token: Token) -> Error {
-        let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
-        let line_start = token.index - self.file[..(token.index) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
+        let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len());
+        let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
         let line_end;
-        if token.lexeme == "\n" {
-            line_end = token.index;
+        if token.token_type == TokenType::Newline {
+            if token.index-1 < line_start {
+                line_end = token.index;
+            } else {
+                line_end = token.index-1;
+            }
         } else {
             line_end = token.index + add as u64;
         }
-        let line_space: String = vec![' '; token.line.to_string().len() as usize].into_iter().collect();
-
-        let column_space: String;
-        if offset.signum() == -1 {
-            column_space = vec![' '; token.column as usize - (-offset) as usize].into_iter().collect();
-        } else {
-            column_space = vec![' '; token.column as usize + offset as usize].into_iter().collect();
-        }
-        anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
+        ParserError {
+            kind: code.into(),
+            message,
+            line: token.line,
+            column: token.column,
+            line_str: String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
+            offset,
+            filename: self.filename.clone(),
+            help,
+        }.into()
+        /*anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
               \x1b[1;94m{3} |\x1b[0m  {}\n\
               \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
               String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
               line_space, column_space, help.unwrap_or("".to_string()),
-              ))
+              ))*/
     }
     pub fn error_tok(&mut self, code: u32, message: String, help: Option<String>, token: TokenError) -> Error {
         //let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
         let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
         let line_end = token.index-1;
-        let line_space: String = vec![' '; token.line.to_string().len() as usize].into_iter().collect();
-
-        let column_space: String = vec![' '; token.column as usize].into_iter().collect();
-        anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
+        ParserError {
+            kind: code.into(),
+            message,
+            line: token.line,
+            column: token.column,
+            line_str: String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
+            offset: 0,
+            filename: self.filename.clone(),
+            help,
+        }.into()
+        /*anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
               \x1b[1;94m{3} |\x1b[0m  {}\n\
               \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
               String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
               line_space, column_space, help.unwrap_or("".to_string()),
-              ))
+              ))*/
     }
 }
 
@@ -539,3 +555,4 @@ pub enum Literal {
 }
 
 pub mod ptr;
+mod error;

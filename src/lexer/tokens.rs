@@ -8,7 +8,7 @@ pub enum TokenType {
     Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Newline,
     Equals, Comma, Slash, LeftAngle, RightAngle, BitAnd, BitOr, BitXor,
 
-    Exp, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
+    Exp, ColonColon, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
 
     Ident(String), Number(f64), Text(String), Boolean(bool), Variable(String),
 
