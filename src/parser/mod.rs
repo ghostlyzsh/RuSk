@@ -61,6 +61,14 @@ impl Parser {
                     self.expression()
                 }
             }
+            TokenType::Indent => {
+                let token = self.tokens.read()?;
+                Err(self.error(1003, "Unexpected indent".to_string(), None, -1, token))
+            }
+            TokenType::Dedent => {
+                let token = self.tokens.read()?;
+                Err(self.error(1003, "Unexpected dedent".to_string(), None, 0, token))
+            }
             _ => {
                 self.expression()
             }
@@ -72,7 +80,7 @@ impl Parser {
             if i == "if" {
                 let condition = self.expression()?;
                 let colon = self.tokens.read()
-                    .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, token)))?;
+                    .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
                 if let TokenType::Colon = colon.token_type {
                     println!("colon");
                     self.tokens.read()?;
@@ -81,7 +89,7 @@ impl Parser {
                         kind: ExprKind::Ident(Ident("if".to_string()))
                     });
                 } else {
-                    return Err(self.error(1001, "Expected \":\" after condition".to_string(), None, colon));
+                    return Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, colon));
                 }
             }
         }
@@ -97,7 +105,89 @@ impl Parser {
         Err(anyhow!("Parser Error: set"))
     }
     pub fn expression(&mut self) -> Result<Expr> {
-        return self.equality();
+        let expr = self.logical_or()?;
+        let token = self.tokens.read()?;
+        if let TokenType::Newline = token.token_type {} else {
+            println!("type: {:?}", token.token_type);
+            println!("expr: {:#?}", expr);
+            return Err(self.error(1002, "Expected new line after statement".to_string(), None, 0, token));
+        }
+        Ok(expr)
+    }
+    pub fn logical_or(&mut self) -> Result<Expr> {
+        let mut expr = self.logical_and()?;
+
+        while let TokenType::Or = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.logical_and()?;
+            if let TokenType::Or = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::Or, P(expr), P(right))
+                }
+            }
+        }
+        
+        Ok(expr)
+    }
+    pub fn logical_and(&mut self) -> Result<Expr> {
+        let mut expr = self.bit_or()?;
+
+        while let TokenType::And = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.bit_or()?;
+            if let TokenType::And = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::And, P(expr), P(right))
+                }
+            }
+        }
+        
+        Ok(expr)
+    }
+    pub fn bit_or(&mut self) -> Result<Expr> {
+        let mut expr = self.bit_xor()?;
+
+        while let TokenType::BitOr = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.bit_xor()?;
+            if let TokenType::BitOr = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::BitOr, P(expr), P(right))
+                }
+            }
+        }
+        
+        Ok(expr)
+    }
+    pub fn bit_xor(&mut self) -> Result<Expr> {
+        let mut expr = self.bit_and()?;
+
+        while let TokenType::BitXor = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.bit_and()?;
+            if let TokenType::BitXor = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::BitXor, P(expr), P(right))
+                }
+            }
+        }
+        
+        Ok(expr)
+    }
+    pub fn bit_and(&mut self) -> Result<Expr> {
+        let mut expr = self.equality()?;
+
+        while let TokenType::BitAnd = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.equality()?;
+            if let TokenType::BitAnd = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::BitAnd, P(expr), P(right))
+                }
+            }
+        }
+        
+        Ok(expr)
     }
     pub fn equality(&mut self) -> Result<Expr> {
         let mut expr = self.comparison()?;
@@ -119,12 +209,12 @@ impl Parser {
         Ok(expr)
     }
     pub fn comparison(&mut self) -> Result<Expr> {
-        let mut expr = self.term()?;
+        let mut expr = self.shift()?;
 
         while let TokenType::LeftAngle | TokenType::LessEqual | TokenType::RightAngle | TokenType::GreaterEqual =
             self.tokens.peek()?.token_type {
             let operator = self.tokens.read()?;
-            let right = self.term()?;
+            let right = self.shift()?;
             match operator.token_type {
                 TokenType::LeftAngle => {
                     expr = Expr {
@@ -149,6 +239,24 @@ impl Parser {
             }
         }
 
+        Ok(expr)
+    }
+    pub fn shift(&mut self) -> Result<Expr> {
+        let mut expr = self.term()?;
+
+        while let TokenType::Shl | TokenType::Shr = self.tokens.peek()?.token_type {
+            let operator = self.tokens.read()?;
+            let right = self.term()?;
+            if let TokenType::Shl = operator.token_type {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::Shl, P(expr), P(right))
+                }
+            } else {
+                expr = Expr {
+                    kind: ExprKind::Binary(BinOp::Shr, P(expr), P(right))
+                }
+            }
+        }
         Ok(expr)
     }
     pub fn term(&mut self) -> Result<Expr> {
@@ -242,21 +350,21 @@ impl Parser {
                     if let TokenType::RightParen = t.token_type {
                         return Ok(expr);
                     } else {
-                        return Err(self.error(1001, "Expect ')' after expression".to_string(), None, t))
+                        return Err(self.error(1001, "Expect ')' after expression".to_string(), None, 0, t))
                     }
                 }
                 Err(_) => {
-                    return Err(self.error(1001, "Expect ')' after expression".to_string(), None, token))
+                    return Err(self.error(1001, "Expect ')' after expression".to_string(), None, 0, token))
                 }
             }
         }
 
-        self.tokens.read()?;
-        Err(anyhow!("Parser Error"))
+        let token = self.tokens.read()?;
+        Err(self.error(1002, "Unrecognized syntax".to_string(), None, 0, token))
     }
-    pub fn error(&mut self, code: u32, message: String, help: Option<String>, token: Token) -> Error {
+    pub fn error(&mut self, code: u32, message: String, help: Option<String>, offset: i32, token: Token) -> Error {
         let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
-        let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
+        let line_start = token.index - self.file[..(token.index) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
         let line_end;
         if token.lexeme == "\n" {
             line_end = token.index;
@@ -266,11 +374,15 @@ impl Parser {
         let line_space: String = vec![' '; token.line.to_string().len() as usize].into_iter().collect();
 
         let column_space: String;
-        column_space = vec![' '; token.column as usize].into_iter().collect();
+        if offset.signum() == -1 {
+            column_space = vec![' '; token.column as usize - (-offset) as usize].into_iter().collect();
+        } else {
+            column_space = vec![' '; token.column as usize + offset as usize].into_iter().collect();
+        }
         anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
               \x1b[1;94m{3} |\x1b[0m  {}\n\
               \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
-              String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap().trim(),
+              String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
               line_space, column_space, help.unwrap_or("".to_string()),
               ))
     }
@@ -282,6 +394,7 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum ExprKind {
     Set(Ident, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
@@ -322,6 +435,7 @@ pub enum BinOp {
     Ge, // >=
     BitAnd, // &
     BitOr, // |
+    BitXor, // ^
     Shl, // <<
     Shr, // >>
 }

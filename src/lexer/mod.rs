@@ -9,6 +9,8 @@ pub struct Lexer {
     pub line_start: u64,
     pub start: u64,
     pub filename: String,
+    pub prev_indent: u32,
+    pub indent_stack: Vec<u32>,
 }
 
 impl Lexer {
@@ -20,6 +22,8 @@ impl Lexer {
             line_start: 0,
             start: 0,
             filename,
+            indent_stack: vec![0],
+            prev_indent: 0,
         }
     }
     
@@ -31,11 +35,45 @@ impl Lexer {
             if self.file.read(&mut c).unwrap() == 0 {
                 break;
             }
+            if self.tokens.len() != 0 {
+                if let TokenType::Newline = self.tokens.last().token_type {
+                    let mut indent: u32 = 0;
+                    while c[0] == b'\t' || c[0] == b' ' {
+                        if c[0] == b'\t' {
+                            indent += 4;
+                        } else {
+                            indent += 1;
+                        }
+                        self.file.read(&mut c).unwrap();
+                    }
+                    let sign = (indent as i64 - self.prev_indent as i64).signum();
+                    if sign == -1 {
+                        let mut other_indent = 0;
+                        loop {
+                            other_indent = match self.indent_stack.pop() {
+                                Some(i) => i,
+                                None => break 
+                            };
+                            if *self.indent_stack.last().unwrap() <= indent { break }
+                        }
+                        if *self.indent_stack.last().unwrap() != indent {
+                            return Err(self.error(3, "Mismatching indent".to_string(), 0, None));
+                        }
+                        self.tokens.write_one(self.token_from_type(TokenType::Dedent));
+                    } else if sign == 1 {
+                        self.indent_stack.push(indent);
+                        self.tokens.write_one(self.token_from_type(TokenType::Indent));
+                    }
+                    self.prev_indent = indent;
+                }
+            }
+
             match c[0] as char {
                 ':' => self.tokens.write_one(self.token_from_type(TokenType::Colon)),
                 '%' => self.tokens.write_one(self.token_from_type(TokenType::Percent)),
                 '+' => self.tokens.write_one(self.token_from_type(TokenType::Plus)),
                 '-' => self.tokens.write_one(self.token_from_type(TokenType::Minus)),
+                '^' => self.tokens.write_one(self.token_from_type(TokenType::BitXor)),
                 '*' => {
                     self.file.read(&mut c).unwrap();
                     if c[0] == b'*' {
@@ -53,6 +91,8 @@ impl Lexer {
                     self.file.read(&mut c).unwrap();
                     if c[0] == b'=' {
                         self.tokens.write_one(self.token_from_type(TokenType::LessEqual));
+                    } else if c[0] == b'<' {
+                        self.tokens.write_one(self.token_from_type(TokenType::Shl));
                     } else {
                         self.file.set_position(self.file.position()-1);
                         self.tokens.write_one(self.token_from_type(TokenType::LeftAngle));
@@ -62,9 +102,29 @@ impl Lexer {
                     self.file.read(&mut c).unwrap();
                     if c[0] == b'=' {
                         self.tokens.write_one(self.token_from_type(TokenType::GreaterEqual));
+                    } else if c[0] == b'>' {
+                        self.tokens.write_one(self.token_from_type(TokenType::Shr));
                     } else {
                         self.file.set_position(self.file.position()-1);
                         self.tokens.write_one(self.token_from_type(TokenType::RightAngle));
+                    }
+                }
+                '|' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'|' {
+                        self.tokens.write_one(self.token_from_type(TokenType::Or));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::BitOr));
+                    }
+                }
+                '&' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'&' {
+                        self.tokens.write_one(self.token_from_type(TokenType::And));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::BitAnd));
                     }
                 }
                 '/' => self.tokens.write_one(self.token_from_type(TokenType::Slash)),
@@ -77,7 +137,6 @@ impl Lexer {
                         self.tokens.write_one(self.token_from_type(TokenType::Bang));
                     }
                 }
-                '\r' | '\t' => self.tokens.write_one(self.token_from_type(TokenType::Tab)),
                 '#' => {
                     self.file.read_until(b'\n', &mut Vec::new()).unwrap();
                     self.line_start = self.file.position();
@@ -94,7 +153,7 @@ impl Lexer {
                     self.line_start = self.file.position();
                     self.line += 1;
                 }
-                ' ' => {}
+                ' ' | '\r' => {}
                 c => {
                     if c.is_ascii_digit() {
                         self.file.set_position(self.file.position()-1);

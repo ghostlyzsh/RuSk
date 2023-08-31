@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use std::time::Instant;
 
 use anyhow::Result;
@@ -29,7 +31,6 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    println!("Tokens: {:#?}", lexer.tokens);
     let mut parser = Parser::new(lexer.tokens, options.file, contents);
     let now = Instant::now();
     match parser.parse() {

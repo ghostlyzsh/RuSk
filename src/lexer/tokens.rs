@@ -2,14 +2,15 @@ use std::io::{self, Error, ErrorKind};
 
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum TokenType {
-    Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Exp, Tab, Newline,
-    Equals, Comma, BangEqual, Slash, LeftAngle, RightAngle, LessEqual, GreaterEqual,
+    Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Newline,
+    Equals, Comma, Slash, LeftAngle, RightAngle, BitAnd, BitOr, BitXor,
+
+    Exp, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
 
     Ident(String), Number(f64), Text(String), Boolean(bool), Variable(String),
 
-    EOF,
+    Indent, Dedent,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,13 @@ impl Tokens {
     }
     pub fn is_at_end(&mut self) -> bool {
         (self.pos+1) as usize >= self.inner.len()
+    }
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn last(&self) -> Token {
+        self.inner.last().unwrap().clone()
     }
 
     pub fn read(&mut self) -> io::Result<Token> {
