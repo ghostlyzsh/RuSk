@@ -1,8 +1,6 @@
-use std::io;
-
 use anyhow::{Result, anyhow, Error};
 
-use crate::lexer::tokens::{Tokens, TokenType, Token};
+use crate::lexer::tokens::{Tokens, TokenType, Token, TokenError};
 
 use self::ptr::P;
 
@@ -31,8 +29,12 @@ impl Parser {
                 }
                 Err(e) => {
                     let message = e.to_string();
-                    match e.downcast::<io::Error>() {
-                        Ok(e) => e,
+                    match e.downcast::<TokenError>() {
+                        Ok(e) => {
+                            errored.1.push_str(&self.error_tok(1004, "Unexpected end of file".to_string(), None, e).to_string());
+                            errored.0 = true;
+                            break;
+                        }
                         Err(_) => {
                             errored.1.push_str(&message);
                             errored.0 = true;
@@ -58,7 +60,7 @@ impl Parser {
                 } else if s == "set" {
                     self.set_statement()
                 } else {
-                    self.expression()
+                    self.expression_statement()
                 }
             }
             TokenType::Indent => {
@@ -70,7 +72,7 @@ impl Parser {
                 Err(self.error(1003, "Unexpected dedent".to_string(), None, 0, token))
             }
             _ => {
-                self.expression()
+                self.expression_statement()
             }
         }
     }
@@ -82,11 +84,12 @@ impl Parser {
                 let colon = self.tokens.read()
                     .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
                 if let TokenType::Colon = colon.token_type {
-                    println!("colon");
-                    self.tokens.read()?;
+                    self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
+                    self.consume(TokenType::Indent, "Expected indent after \"if\"".to_string())?;
+                    let expr = self.block()?;
                     // placeholder if return
                     return Ok(Expr {
-                        kind: ExprKind::Ident(Ident("if".to_string()))
+                        kind: ExprKind::If(P(condition), P(expr))
                     });
                 } else {
                     return Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, colon));
@@ -104,14 +107,56 @@ impl Parser {
         }
         Err(anyhow!("Parser Error: set"))
     }
-    pub fn expression(&mut self) -> Result<Expr> {
-        let expr = self.logical_or()?;
+
+    pub fn block(&mut self) -> Result<Block> {
+        let mut block = Block {
+            exprs: Vec::new()
+        };
+        let mut errored = (false, "".to_string());
+        while self.tokens.peek()?.token_type != TokenType::Dedent {
+            match self.statement() {
+                Ok(tree) => {
+                    block.exprs.push(P(tree));
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    match e.downcast::<TokenError>() {
+                        Ok(e) => {
+                            errored.1.push_str(&self.error_tok(1004, "Unexpected end of file".to_string(), None, e).to_string());
+                            errored.0 = true;
+                            break;
+                        }
+                        Err(_) => {
+                            errored.1.push_str(&message);
+                            errored.0 = true;
+                            continue;
+                        }
+                    };
+                }
+            };
+            if self.tokens.is_at_end() {
+                break;
+            }
+        }
+        match self.consume(TokenType::Dedent, "Expected dedent at end of code block".to_string()) {
+            _ => {}
+        };
+        if errored.0 {
+            return Err(anyhow!(errored.1));
+        }
+
+        Ok(block)
+    }
+    pub fn expression_statement(&mut self) -> Result<Expr> {
+        let expr = self.expression()?;
         let token = self.tokens.read()?;
         if let TokenType::Newline = token.token_type {} else {
-            println!("type: {:?}", token.token_type);
-            println!("expr: {:#?}", expr);
             return Err(self.error(1002, "Expected new line after statement".to_string(), None, 0, token));
         }
+        Ok(expr)
+    }
+    pub fn expression(&mut self) -> Result<Expr> {
+        let expr = self.logical_or()?;
         Ok(expr)
     }
     pub fn logical_or(&mut self) -> Result<Expr> {
@@ -362,6 +407,26 @@ impl Parser {
         let token = self.tokens.read()?;
         Err(self.error(1002, "Unrecognized syntax".to_string(), None, 0, token))
     }
+
+    pub fn consume(&mut self, token_type: TokenType, message: String) -> Result<Token> {
+        let token = match self.tokens.read() {
+            Ok(t) => t,
+            Err(e) => {
+                match e.downcast::<TokenError>() {
+                    Ok(e) => {
+                        return Err(self.error_tok(1004, "Unexpected end of file".to_string(), None, e))
+                    }
+                    Err(_) => {
+                        panic!("Parser broke");
+                    }
+                };
+            }
+        };
+        if token_type == token.clone().token_type { Ok(token) } else {
+            Err(self.error(1002, message, None, 0, token))
+        }
+    }
+    
     pub fn error(&mut self, code: u32, message: String, help: Option<String>, offset: i32, token: Token) -> Error {
         let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
         let line_start = token.index - self.file[..(token.index) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
@@ -379,6 +444,20 @@ impl Parser {
         } else {
             column_space = vec![' '; token.column as usize + offset as usize].into_iter().collect();
         }
+        anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
+              \x1b[1;94m{3} |\x1b[0m  {}\n\
+              \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
+              String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
+              line_space, column_space, help.unwrap_or("".to_string()),
+              ))
+    }
+    pub fn error_tok(&mut self, code: u32, message: String, help: Option<String>, token: TokenError) -> Error {
+        //let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
+        let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
+        let line_end = token.index-1;
+        let line_space: String = vec![' '; token.line.to_string().len() as usize].into_iter().collect();
+
+        let column_space: String = vec![' '; token.column as usize].into_iter().collect();
         anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
               \x1b[1;94m{3} |\x1b[0m  {}\n\
               \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
@@ -414,7 +493,7 @@ pub struct Arm {
 
 #[derive(Clone, Debug)]
 pub struct Block {
-    pub exprs: P<Expr>,
+    pub exprs: Vec<P<Expr>>,
 }
 
 #[derive(Clone, Debug)]
@@ -459,4 +538,4 @@ pub enum Literal {
     Boolean(bool),
 }
 
-mod ptr;
+pub mod ptr;

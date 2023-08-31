@@ -48,9 +48,8 @@ impl Lexer {
                     }
                     let sign = (indent as i64 - self.prev_indent as i64).signum();
                     if sign == -1 {
-                        let mut other_indent = 0;
                         loop {
-                            other_indent = match self.indent_stack.pop() {
+                            match self.indent_stack.pop() {
                                 Some(i) => i,
                                 None => break 
                             };
@@ -240,6 +239,7 @@ impl Lexer {
         }
 
         if c[0] == b'.' {
+            number.push('.');
             if self.file.clone().into_inner().get(self.file.position() as usize).unwrap_or(&0).is_ascii_digit() {
                 self.file.read(&mut c).unwrap();
                 while c[0].is_ascii_digit() {

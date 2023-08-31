@@ -1,7 +1,9 @@
-use std::io::{self, Error, ErrorKind};
+use std::fmt;
+
+use anyhow::Result;
 
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenType {
     Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Newline,
     Equals, Comma, Slash, LeftAngle, RightAngle, BitAnd, BitOr, BitXor,
@@ -21,6 +23,26 @@ pub struct Token {
     pub line: u32,
     pub index: u64,
 }
+
+#[derive(Debug)]
+pub struct TokenError {
+    pub line: u32,
+    pub index: u64,
+    pub column: u64,
+}
+impl TokenError {
+    pub fn new(line: u32, column: u64, index: u64) -> Self {
+        TokenError { line, index, column }
+    }
+}
+
+impl fmt::Display for TokenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "token error {}:{}", self.line, self.column)
+    }
+}
+
+impl std::error::Error for TokenError {}
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -55,18 +77,21 @@ impl Tokens {
         self.inner.last().unwrap().clone()
     }
 
-    pub fn read(&mut self) -> io::Result<Token> {
+
+    pub fn read(&mut self) -> Result<Token> {
         if self.inner.len() < (self.pos+1) as usize {
-            return Err(Error::new(ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
+            let token = &self.inner[(self.pos-1) as usize];
+            return Err(TokenError::new(token.line, token.column, token.index).into());
         }
         let token = &self.inner[self.pos as usize];
         self.pos += 1;
         Ok(token.clone())
     }
 
-    pub fn peek(&self) -> io::Result<Token> {
+    pub fn peek(&self) -> Result<Token> {
         if self.inner.len() < (self.pos+1) as usize {
-            return Err(Error::new(ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
+            let token = &self.inner[(self.pos-1) as usize];
+            return Err(TokenError::new(token.line, token.column, token.index).into());
         }
         let token = &self.inner[(self.pos) as usize];
         Ok(token.clone())
