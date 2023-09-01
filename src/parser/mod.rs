@@ -62,7 +62,7 @@ impl Parser {
                 } else if s == "set" {
                     self.set_statement()
                 } else {
-                    self.expression_statement()
+                    self.call_expression()
                 }
             }
             TokenType::Indent => {
@@ -86,12 +86,7 @@ impl Parser {
         let token = self.tokens.read()?;
         if let TokenType::Ident(i) = token.clone().token_type {
             if i == "if" {
-                let condition = match self.expression() {
-                    Ok(c) => c,
-                    Err(_) => {
-                        return Err(self.error(1002, "Expected condition".to_string(), None, 1, token))
-                    }
-                };
+                let condition = self.call_expression()?;
                 let colon = self.tokens.read()
                     .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
                 if let TokenType::Colon = colon.token_type {
@@ -164,6 +159,35 @@ impl Parser {
         }
 
         Ok(block)
+    }
+    pub fn call_expression(&mut self) -> Result<Expr> {
+        if let TokenType::Ident(string) = self.tokens.peek()?.token_type {
+            self.tokens.read()?;
+            if let TokenType::LeftParen = self.tokens.peek()?.token_type {
+                self.tokens.read()?;
+                let expr = self.arguments()?;
+                self.consume(TokenType::RightParen, "Expected closing parenthesis in function call".to_string())?;
+                Ok(Expr { kind: ExprKind::Call(Ident(string), expr) })
+            } else {
+                Ok(Expr {
+                    kind: ExprKind::Ident(Ident(string))
+                })
+            }
+        } else {
+            self.expression()
+        }
+    }
+    pub fn arguments(&mut self) -> Result<Vec<P<Expr>>> {
+        let mut exprs = Vec::new();
+        while TokenType::RightParen != self.tokens.peek()?.token_type {
+            exprs.push(P(self.expression()?));
+            if let TokenType::Comma = self.tokens.peek()?.token_type {
+                self.tokens.read()?;
+            } else {
+                return Ok(exprs);
+            }
+        }
+        return Ok(exprs);
     }
     pub fn expression_statement(&mut self) -> Result<Expr> {
         let expr = self.expression()?;
@@ -561,6 +585,7 @@ pub struct Expr {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum ExprKind {
+    Call(Ident, Vec<P<Expr>>),
     Set(Variable, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
@@ -626,6 +651,7 @@ pub enum Literal {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Variable {
     name: Ident,
     list_mode: Option<VariableListMode>,
