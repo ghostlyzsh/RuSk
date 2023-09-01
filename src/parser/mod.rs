@@ -28,14 +28,19 @@ impl Parser {
                     self.exprs.push(P(tree));
                 }
                 Err(e) => {
-                    match e.downcast::<ParserError>() {
-                        Ok(e) => {
-                            errored.1.push_str(&e.into_string());
-                            errored.0 = true;
-                            break;
-                        }
-                        Err(_) => {
-                            panic!("Parser broke");
+                    match e.downcast::<TokenError>() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            match e.downcast::<ParserError>() {
+                                Ok(e) => {
+                                    errored.1.push_str(&e.into_string());
+                                    errored.0 = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    panic!("Parser broke: {}", e);
+                                }
+                            };
                         }
                     };
                 }
@@ -68,6 +73,10 @@ impl Parser {
                 let token = self.tokens.read()?;
                 Err(self.error(1003, "Unexpected dedent".to_string(), None, 0, token))
             }
+            TokenType::Newline => {
+                self.tokens.read()?;
+                self.statement()
+            }
             _ => {
                 self.expression_statement()
             }
@@ -87,10 +96,8 @@ impl Parser {
                     .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
                 if let TokenType::Colon = colon.token_type {
                     self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
-                    println!("here");
                     self.consume(TokenType::Indent, "Expected indent after \"if\"".to_string())?;
                     let expr = self.block()?;
-                    // placeholder if return
                     return Ok(Expr {
                         kind: ExprKind::If(P(condition), P(expr))
                     });
@@ -159,8 +166,60 @@ impl Parser {
         Ok(expr)
     }
     pub fn expression(&mut self) -> Result<Expr> {
-        let expr = self.logical_or()?;
+        let expr = self.variable()?;
         Ok(expr)
+    }
+    pub fn variable(&mut self) -> Result<Expr> {
+        if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
+            self.tokens.read()?;
+            let visibility = match self.tokens.peek()?.token_type {
+                TokenType::Star => {
+                    self.tokens.read()?;
+                    VisibilityMode::Global
+                }
+                TokenType::Tilde => {
+                    self.tokens.read()?;
+                    VisibilityMode::Module
+                }
+                _ => {
+                    VisibilityMode::Local
+                }
+            };
+            let ident = self.tokens.read()?;
+            if let TokenType::Ident(name) = ident.token_type {
+                if let TokenType::ColonColon = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    if let TokenType::Star = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                        self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                        Ok(Expr { kind: ExprKind::Var(Variable {
+                            name: Ident(name),
+                            list_mode: Some(VariableListMode::All),
+                            visibility,
+                            })})
+                    } else {
+                        let expr = self.expression()?;
+                        self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                        Ok(Expr { kind: ExprKind::Var(Variable {
+                            name: Ident(name),
+                            list_mode: Some(VariableListMode::Index(P(expr))),
+                            visibility,
+                        })})
+                    }
+                } else {
+                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                    Ok(Expr { kind: ExprKind::Var(Variable {
+                        name: Ident(name),
+                        list_mode: None,
+                        visibility,
+                    }) })
+                }
+            } else {
+                Err(self.error(1005, "Expected a variable name".to_string(), None, 0, ident))
+            }
+        } else {
+            self.logical_or()
+        }
     }
     pub fn logical_or(&mut self) -> Result<Expr> {
         let mut expr = self.logical_and()?;
@@ -497,6 +556,7 @@ pub enum ExprKind {
     If(P<Expr>, P<Block>),
     Switch(P<Expr>, Vec<Arm>),
     Block(P<Block>),
+    Var(Variable),
     Lit(Literal),
     Ident(Ident),
 }
@@ -552,6 +612,26 @@ pub enum Literal {
     Text(String),
     Number(f64),
     Boolean(bool),
+}
+
+#[derive(Clone, Debug)]
+pub struct Variable {
+    name: Ident,
+    list_mode: Option<VariableListMode>,
+    visibility: VisibilityMode,
+}
+
+#[derive(Clone, Debug)]
+pub enum VariableListMode {
+    All,
+    Index(P<Expr>)
+}
+
+#[derive(Clone, Debug)]
+pub enum VisibilityMode {
+    Local,
+    Module,
+    Global,
 }
 
 pub mod ptr;

@@ -26,6 +26,7 @@ impl ParserError {
             ErrorKind::ExpectedCharacter => 1002,
             ErrorKind::IndentChange => 1003,
             ErrorKind::UnexpectedEof => 1004,
+            ErrorKind::ExpectedIdentifier => 1005,
             ErrorKind::Invalid => 0,
         };
 
@@ -50,6 +51,7 @@ pub enum ErrorKind {
     ExpectedCharacter,
     IndentChange,
     UnexpectedEof,
+    ExpectedIdentifier,
     Invalid,
 }
 impl From<u32> for ErrorKind {
@@ -59,6 +61,7 @@ impl From<u32> for ErrorKind {
             1002 => Self::ExpectedCharacter,
             1003 => Self::IndentChange,
             1004 => Self::UnexpectedEof,
+            1005 => Self::ExpectedIdentifier,
             _ => Self::Invalid,
         }
     }
@@ -72,6 +75,7 @@ impl ErrorKind {
             ExpectedCharacter => "expected character",
             IndentChange => "unexpected indent change",
             UnexpectedEof => "unexpected EOF",
+            ExpectedIdentifier => "expected identifier",
             Invalid => "invalid",
         }
     }

@@ -8,4 +8,3 @@ edition = "2021"
 [dependencies]
 argh = "0.1.12"
 anyhow = "1"
-lazy_static = "1.4.0"

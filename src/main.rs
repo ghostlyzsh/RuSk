@@ -43,6 +43,6 @@ fn main() -> Result<()> {
     };
     let elapsed_time = now.elapsed();
     println!("{:#?}", parser.exprs);
-    println!("Took {} us", elapsed_time.as_micros());
+    println!("Took {} ns", elapsed_time.as_nanos());
     Ok(())
 }

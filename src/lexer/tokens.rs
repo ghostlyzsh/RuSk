@@ -7,10 +7,11 @@ use anyhow::Result;
 pub enum TokenType {
     Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Newline,
     Equals, Comma, Slash, LeftAngle, RightAngle, BitAnd, BitOr, BitXor,
+    LeftBrace, RightBrace, Tilde,
 
     Exp, ColonColon, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
 
-    Ident(String), Number(f64), Text(String), Boolean(bool), Variable(String),
+    Ident(String), Number(f64), Text(String), Boolean(bool),
 
     Indent, Dedent,
 }
@@ -79,8 +80,15 @@ impl Tokens {
 
 
     pub fn read(&mut self) -> Result<Token> {
-        if self.inner.len() < (self.pos+1) as usize {
-            let token = &self.inner[(self.pos-1) as usize];
+        if self.inner.len() == 0 {
+            return Err(TokenError::new(0, 0, 0).into());
+        } else if self.inner.len() < (self.pos+1) as usize {
+            let token;
+            if self.pos == 0 {
+                token = &self.inner[0];
+            } else {
+                token = &self.inner[(self.pos-1) as usize];
+            }
             return Err(TokenError::new(token.line, token.column, token.index).into());
         }
         let token = &self.inner[self.pos as usize];
@@ -89,8 +97,16 @@ impl Tokens {
     }
 
     pub fn peek(&self) -> Result<Token> {
-        if self.inner.len() < (self.pos+1) as usize {
-            let token = &self.inner[(self.pos-1) as usize];
+        //println!("pos {} token len {}", self.pos+1, self.inner.len());
+        if self.inner.len() == 0 {
+            return Err(TokenError::new(0, 0, 0).into());
+        } else if self.inner.len() < (self.pos+1) as usize {
+            let token;
+            if self.pos == 0 {
+                token = &self.inner[0];
+            } else {
+                token = &self.inner[(self.pos-1) as usize];
+            }
             return Err(TokenError::new(token.line, token.column, token.index).into());
         }
         let token = &self.inner[(self.pos) as usize];

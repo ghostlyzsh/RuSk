@@ -68,11 +68,20 @@ impl Lexer {
             }
 
             match c[0] as char {
-                ':' => self.tokens.write_one(self.token_from_type(TokenType::Colon)),
                 '%' => self.tokens.write_one(self.token_from_type(TokenType::Percent)),
                 '+' => self.tokens.write_one(self.token_from_type(TokenType::Plus)),
                 '-' => self.tokens.write_one(self.token_from_type(TokenType::Minus)),
                 '^' => self.tokens.write_one(self.token_from_type(TokenType::BitXor)),
+                '~' => self.tokens.write_one(self.token_from_type(TokenType::Tilde)),
+                ':' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b':' {
+                        self.tokens.write_one(self.token_from_type(TokenType::ColonColon));
+                    } else {
+                        self.file.set_position(self.file.position()-1);
+                        self.tokens.write_one(self.token_from_type(TokenType::Colon));
+                    }
+                },
                 '*' => {
                     self.file.read(&mut c).unwrap();
                     if c[0] == b'*' {
@@ -141,9 +150,8 @@ impl Lexer {
                     self.line_start = self.file.position();
                     self.line += 1;
                 }
-                '{' => {
-                    self.process_variable().unwrap_or_else(|e| { errored.1.push_str(&e); errored.0 = true; });
-                }
+                '{' => self.tokens.write_one(self.token_from_type(TokenType::LeftBrace)),
+                '}' => self.tokens.write_one(self.token_from_type(TokenType::RightBrace)),
                 '"' => {
                     self.process_string().unwrap_or_else(|e| { errored.1.push_str(&e); errored.0 = true; });
                 }
@@ -197,7 +205,7 @@ impl Lexer {
         }
     }
 
-    fn process_variable(&mut self) -> Result<(), String> {
+    /*fn process_variable(&mut self) -> Result<(), String> {
         let mut name = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
@@ -214,7 +222,7 @@ impl Lexer {
 
         self.tokens.write_one(self.token_from_type(TokenType::Variable(name)));
         Ok(())
-    }
+    }*/
     fn process_string(&mut self) -> Result<(), String> {
         let mut name = String::new();
         let mut c = [0u8; 1];
@@ -264,7 +272,7 @@ impl Lexer {
         let mut ident = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
-        while c[0].is_ascii_alphabetic() || c[0] == b'\'' {
+        while c[0].is_ascii_alphabetic() || c[0] == b'\'' || c[0] == b'_' {
             ident.push(c[0] as char);
             self.file.read(&mut c).unwrap();
         }
