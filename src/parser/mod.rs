@@ -110,9 +110,17 @@ impl Parser {
     }
     pub fn set_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
-        if let TokenType::Ident(i) = token.token_type {
+        if let TokenType::Ident(i) = token.clone().token_type {
             if i == "set" {
-
+                if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    let variable = self.handle_variable()?;
+                    self.consume(TokenType::Ident("to".to_string()), "Expected \"to\" after variable".to_string())?;
+                    let expression = self.statement()?;
+                    return Ok(Expr { kind: ExprKind::Set(variable, P(expression)) })
+                } else {
+                    return Err(self.error(1002, "Expected variable".to_string(), None, 1, token))
+                }
             }
         }
         Err(anyhow!("Parser Error: set"))
@@ -172,53 +180,56 @@ impl Parser {
     pub fn variable(&mut self) -> Result<Expr> {
         if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
             self.tokens.read()?;
-            let visibility = match self.tokens.peek()?.token_type {
-                TokenType::Star => {
-                    self.tokens.read()?;
-                    VisibilityMode::Global
-                }
-                TokenType::Tilde => {
-                    self.tokens.read()?;
-                    VisibilityMode::Module
-                }
-                _ => {
-                    VisibilityMode::Local
-                }
-            };
-            let ident = self.tokens.read()?;
-            if let TokenType::Ident(name) = ident.token_type {
-                if let TokenType::ColonColon = self.tokens.peek()?.token_type {
-                    self.tokens.read()?;
-                    if let TokenType::Star = self.tokens.peek()?.token_type {
-                        self.tokens.read()?;
-                        self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                        Ok(Expr { kind: ExprKind::Var(Variable {
-                            name: Ident(name),
-                            list_mode: Some(VariableListMode::All),
-                            visibility,
-                            })})
-                    } else {
-                        let expr = self.expression()?;
-                        self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                        Ok(Expr { kind: ExprKind::Var(Variable {
-                            name: Ident(name),
-                            list_mode: Some(VariableListMode::Index(P(expr))),
-                            visibility,
-                        })})
-                    }
-                } else {
-                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                    Ok(Expr { kind: ExprKind::Var(Variable {
-                        name: Ident(name),
-                        list_mode: None,
-                        visibility,
-                    }) })
-                }
-            } else {
-                Err(self.error(1005, "Expected a variable name".to_string(), None, 0, ident))
-            }
+            Ok(Expr { kind: ExprKind::Var(self.handle_variable()?) })
         } else {
             self.logical_or()
+        }
+    }
+    pub fn handle_variable(&mut self) -> Result<Variable> {
+        let visibility = match self.tokens.peek()?.token_type {
+            TokenType::Star => {
+                self.tokens.read()?;
+                VisibilityMode::Global
+            }
+            TokenType::Tilde => {
+                self.tokens.read()?;
+                VisibilityMode::Module
+            }
+            _ => {
+                VisibilityMode::Local
+            }
+        };
+        let ident = self.tokens.read()?;
+        if let TokenType::Ident(name) = ident.token_type {
+            if let TokenType::ColonColon = self.tokens.peek()?.token_type {
+                self.tokens.read()?;
+                if let TokenType::Star = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                    Ok(Variable {
+                        name: Ident(name),
+                        list_mode: Some(VariableListMode::All),
+                        visibility,
+                        })
+                } else {
+                    let expr = self.expression()?;
+                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                    Ok(Variable {
+                        name: Ident(name),
+                        list_mode: Some(VariableListMode::Index(P(expr))),
+                        visibility,
+                    })
+                }
+            } else {
+                self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                Ok(Variable {
+                    name: Ident(name),
+                    list_mode: None,
+                    visibility,
+                })
+            }
+        } else {
+            Err(self.error(1005, "Expected a variable name".to_string(), None, 0, ident))
         }
     }
     pub fn logical_or(&mut self) -> Result<Expr> {
@@ -550,7 +561,7 @@ pub struct Expr {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum ExprKind {
-    Set(Ident, P<Expr>),
+    Set(Variable, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
     If(P<Expr>, P<Block>),

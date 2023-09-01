@@ -23,6 +23,7 @@ fn main() -> Result<()> {
 
     let contents = std::fs::read_to_string(options.file.clone())?;
 
+    let now = Instant::now();
     let mut lexer = Lexer::new(options.file.clone(), contents.clone());
     match lexer.process() {
         Ok(_) => {}
@@ -33,7 +34,6 @@ fn main() -> Result<()> {
     };
     //println!("Tokens: {:#?}", lexer.tokens);
     let mut parser = Parser::new(lexer.tokens, options.file, contents);
-    let now = Instant::now();
     match parser.parse() {
         Ok(_) => {}
         Err(e) => {
