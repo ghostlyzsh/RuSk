@@ -1,15 +1,18 @@
 #![allow(non_snake_case)]
 
-use std::time::Instant;
+use std::{time::Instant, ffi::CString};
 
 use anyhow::Result;
 use argh::FromArgs;
+use lazy_static::lazy_static;
 use lexer::Lexer;
+use llvm_sys::core::{LLVMDumpModule, LLVMDisposeModule, LLVMPrintModuleToString, LLVMInstructionEraseFromParent};
 
-use crate::parser::Parser;
+use crate::{parser::Parser, codegen::CodeGen};
 
-pub(crate) mod lexer;
-pub(crate) mod parser;
+pub mod lexer;
+pub mod parser;
+pub mod codegen;
 
 #[derive(FromArgs)]
 /// A compiler for skript
@@ -44,5 +47,21 @@ fn main() -> Result<()> {
     let elapsed_time = now.elapsed();
     println!("{:#?}", parser.exprs);
     println!("Took {} ns", elapsed_time.as_nanos());
+
+    println!("==============");
+    unsafe {
+        let mut codegen = CodeGen::new(parser.exprs);
+        match codegen.gen_code() {
+            Ok(f) => {
+            }
+            Err(e) => {
+                println!("error");
+                eprint!("{}", e);
+                std::process::exit(1);
+            }
+        };
+        LLVMDumpModule(codegen.module);
+        codegen.end();
+    }
     Ok(())
 }

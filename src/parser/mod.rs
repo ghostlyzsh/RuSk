@@ -88,13 +88,14 @@ impl Parser {
             if i == "if" {
                 let condition = self.call_expression()?;
                 let colon = self.tokens.read()
-                    .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token)))?;
+                    .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token.clone())))?;
                 if let TokenType::Colon = colon.token_type {
                     self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
                     self.consume(TokenType::Indent, "Expected indent after \"if\"".to_string())?;
                     let expr = self.block()?;
                     return Ok(Expr {
-                        kind: ExprKind::If(P(condition), P(expr))
+                        kind: ExprKind::If(P(condition), P(expr)),
+                        line: token.line,
                     });
                 } else {
                     return Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, colon));
@@ -112,7 +113,7 @@ impl Parser {
                     let variable = self.handle_variable()?;
                     self.consume(TokenType::Ident("to".to_string()), "Expected \"to\" after variable".to_string())?;
                     let expression = self.statement()?;
-                    return Ok(Expr { kind: ExprKind::Set(variable, P(expression)) })
+                    return Ok(Expr { kind: ExprKind::Set(variable, P(expression)), line: token.line })
                 } else {
                     return Err(self.error(1002, "Expected variable".to_string(), None, 1, token))
                 }
@@ -162,15 +163,16 @@ impl Parser {
     }
     pub fn call_expression(&mut self) -> Result<Expr> {
         if let TokenType::Ident(string) = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
+            let token = self.tokens.read()?;
             if let TokenType::LeftParen = self.tokens.peek()?.token_type {
                 self.tokens.read()?;
                 let expr = self.arguments()?;
                 self.consume(TokenType::RightParen, "Expected closing parenthesis in function call".to_string())?;
-                Ok(Expr { kind: ExprKind::Call(Ident(string), expr) })
+                Ok(Expr { kind: ExprKind::Call(Ident(string), expr), line: token.line })
             } else {
                 Ok(Expr {
-                    kind: ExprKind::Ident(Ident(string))
+                    kind: ExprKind::Ident(Ident(string)),
+                    line: token.line,
                 })
             }
         } else {
@@ -203,8 +205,11 @@ impl Parser {
     }
     pub fn variable(&mut self) -> Result<Expr> {
         if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
-            Ok(Expr { kind: ExprKind::Var(self.handle_variable()?) })
+            let token = self.tokens.read()?;
+            Ok(Expr {
+                kind: ExprKind::Var(self.handle_variable()?),
+                line: token.line
+            })
         } else {
             self.logical_or()
         }
@@ -264,7 +269,8 @@ impl Parser {
             let right = self.logical_and()?;
             if let TokenType::Or = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Or, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Or, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -279,7 +285,8 @@ impl Parser {
             let right = self.bit_or()?;
             if let TokenType::And = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::And, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::And, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -294,7 +301,8 @@ impl Parser {
             let right = self.bit_xor()?;
             if let TokenType::BitOr = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::BitOr, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::BitOr, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -309,7 +317,8 @@ impl Parser {
             let right = self.bit_and()?;
             if let TokenType::BitXor = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::BitXor, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::BitXor, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -324,7 +333,8 @@ impl Parser {
             let right = self.equality()?;
             if let TokenType::BitAnd = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::BitAnd, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::BitAnd, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -339,11 +349,13 @@ impl Parser {
             let right = self.comparison()?;
             if let TokenType::Equals = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Eq, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Eq, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             } else {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Ne, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Ne, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -360,22 +372,26 @@ impl Parser {
             match operator.token_type {
                 TokenType::LeftAngle => {
                     expr = Expr {
-                        kind: ExprKind::Binary(BinOp::Ls, P(expr), P(right))
+                        kind: ExprKind::Binary(BinOp::Ls, P(expr.clone()), P(right)),
+                        line: expr.line,
                     }
                 }
                 TokenType::LessEqual => {
                     expr = Expr {
-                        kind: ExprKind::Binary(BinOp::Le, P(expr), P(right))
+                        kind: ExprKind::Binary(BinOp::Le, P(expr.clone()), P(right)),
+                        line: expr.line,
                     }
                 }
                 TokenType::RightAngle => {
                     expr = Expr {
-                        kind: ExprKind::Binary(BinOp::Gr, P(expr), P(right))
+                        kind: ExprKind::Binary(BinOp::Gr, P(expr.clone()), P(right)),
+                        line: expr.line,
                     }
                 }
                 _ => {
                     expr = Expr {
-                        kind: ExprKind::Binary(BinOp::Ge, P(expr), P(right))
+                        kind: ExprKind::Binary(BinOp::Ge, P(expr.clone()), P(right)),
+                        line: expr.line,
                     }
                 }
             }
@@ -391,11 +407,13 @@ impl Parser {
             let right = self.term()?;
             if let TokenType::Shl = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Shl, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Shl, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             } else {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Shr, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Shr, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -409,11 +427,13 @@ impl Parser {
             let right = self.factor()?;
             if let TokenType::Plus = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Add, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Add, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             } else {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Sub, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Sub, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -428,11 +448,13 @@ impl Parser {
             let right = self.factor()?;
             if let TokenType::Star = operator.token_type {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Mul, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Mul, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             } else {
                 expr = Expr {
-                    kind: ExprKind::Binary(BinOp::Div, P(expr), P(right))
+                    kind: ExprKind::Binary(BinOp::Div, P(expr.clone()), P(right)),
+                    line: expr.line,
                 }
             }
         }
@@ -445,11 +467,13 @@ impl Parser {
             let right = self.unary()?;
             return Ok(if let TokenType::Bang = operator.token_type {
                 Expr {
-                    kind: ExprKind::Unary(UnOp::Not, P(right))
+                    kind: ExprKind::Unary(UnOp::Not, P(right)),
+                    line: operator.line,
                 }
             } else {
                 Expr {
-                    kind: ExprKind::Unary(UnOp::Neg, P(right))
+                    kind: ExprKind::Unary(UnOp::Neg, P(right)),
+                    line: operator.line,
                 }
             })
         }
@@ -458,29 +482,33 @@ impl Parser {
     }
     pub fn primary(&mut self) -> Result<Expr> {
         if let TokenType::Boolean(b) = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
+            let token = self.tokens.read()?;
             return Ok(Expr {
-                kind: ExprKind::Lit(Literal::Boolean(b))
+                kind: ExprKind::Lit(Literal::Boolean(b)),
+                line: token.line,
             });
         }
 
         if let TokenType::Number(n) = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
+            let token = self.tokens.read()?;
             return Ok(Expr {
-                kind: ExprKind::Lit(Literal::Number(n))
+                kind: ExprKind::Lit(Literal::Number(n)),
+                line: token.line,
             });
         }
         if let TokenType::Text(s) = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
+            let token = self.tokens.read()?;
             return Ok(Expr {
-                kind: ExprKind::Lit(Literal::Text(s))
+                kind: ExprKind::Lit(Literal::Text(s)),
+                line: token.line,
             });
         }
 
         if let TokenType::Ident(name) = self.tokens.peek()?.token_type {
-            self.tokens.read()?;
+            let token = self.tokens.read()?;
             return Ok(Expr {
-                kind: ExprKind::Ident(Ident(name))
+                kind: ExprKind::Ident(Ident(name)),
+                line: token.line,
             });
         }
 
@@ -580,6 +608,7 @@ impl Parser {
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
+    pub line: u32,
 }
 
 #[derive(Clone, Debug)]

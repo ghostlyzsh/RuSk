@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 argh = "0.1.12"
 anyhow = "1"
+llvm-sys = { package = "llvm-sys", version = "160" }
+lazy_static = "1.4.0"
