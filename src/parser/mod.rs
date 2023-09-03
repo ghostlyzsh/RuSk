@@ -512,6 +512,15 @@ impl Parser {
             });
         }
 
+        if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
+            let token = self.tokens.read()?;
+            let variable = self.handle_variable()?;
+            return Ok(Expr {
+                kind: ExprKind::Var(variable),
+                line: token.line,
+            });
+        }
+
         if let TokenType::LeftParen = self.tokens.peek()?.token_type {
             let token = self.tokens.read()?;
             let expr = self.expression()?;
@@ -620,6 +629,7 @@ pub enum ExprKind {
     Unary(UnOp, P<Expr>),
     If(P<Expr>, P<Block>),
     Switch(P<Expr>, Vec<Arm>),
+    Native(Ident, Vec<P<Expr>>, Option<P<Expr>>),
     Block(P<Block>),
     Var(Variable),
     Lit(Literal),
@@ -669,7 +679,7 @@ pub enum UnOp {
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub struct Ident(String);
+pub struct Ident(pub String);
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -682,9 +692,9 @@ pub enum Literal {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Variable {
-    name: Ident,
-    list_mode: Option<VariableListMode>,
-    visibility: VisibilityMode,
+    pub name: Ident,
+    pub list_mode: Option<VariableListMode>,
+    pub visibility: VisibilityMode,
 }
 
 #[derive(Clone, Debug)]

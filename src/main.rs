@@ -26,7 +26,6 @@ fn main() -> Result<()> {
 
     let contents = std::fs::read_to_string(options.file.clone())?;
 
-    let now = Instant::now();
     let mut lexer = Lexer::new(options.file.clone(), contents.clone());
     match lexer.process() {
         Ok(_) => {}
@@ -44,11 +43,9 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    let elapsed_time = now.elapsed();
-    println!("{:#?}", parser.exprs);
-    println!("Took {} ns", elapsed_time.as_nanos());
 
     println!("==============");
+    let now = Instant::now();
     unsafe {
         let mut codegen = CodeGen::new(parser.exprs);
         match codegen.gen_code() {
@@ -63,5 +60,7 @@ fn main() -> Result<()> {
         LLVMDumpModule(codegen.module);
         codegen.end();
     }
+    let elapsed_time = now.elapsed();
+    println!("Took {} ns", elapsed_time.as_nanos());
     Ok(())
 }

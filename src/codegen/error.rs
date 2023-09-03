@@ -24,10 +24,12 @@ impl CodeGenError {
         let code = match self.kind {
             ErrorKind::MismatchedTypes => 3001,
             ErrorKind::Null => 3002,
+            ErrorKind::NotInScope => 3003,
+            ErrorKind::InvalidArgs => 3004,
             ErrorKind::Invalid => 0,
         };
 
-        format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} at line {}:\n",
+        format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} at line {}\n",
                 code, self.message, self.line+1, /*self.filename, self.line+1,
               self.line_str,*/
               //line_space, column_space, self.help.clone().unwrap_or("".to_string()),
@@ -45,12 +47,17 @@ impl error::Error for CodeGenError {}
 pub enum ErrorKind {
     MismatchedTypes,
     Null,
+    NotInScope,
+    InvalidArgs,
     Invalid,
 }
 impl From<u32> for ErrorKind {
     fn from(value: u32) -> Self {
         match value {
             3001 => Self::MismatchedTypes,
+            3002 => Self::Null,
+            3003 => Self::NotInScope,
+            3004 => Self::InvalidArgs,
             _ => Self::Invalid,
         }
     }
@@ -62,6 +69,8 @@ impl ErrorKind {
         match *self {
             MismatchedTypes => "mismatched types",
             Null => "found null",
+            NotInScope => "not in scope",
+            InvalidArgs => "invalid arguments",
             Invalid => "invalid",
         }
     }
