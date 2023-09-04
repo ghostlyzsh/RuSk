@@ -6,7 +6,7 @@ use anyhow::Result;
 use argh::FromArgs;
 use lazy_static::lazy_static;
 use lexer::Lexer;
-use llvm_sys::core::{LLVMDumpModule, LLVMDisposeModule, LLVMPrintModuleToString, LLVMInstructionEraseFromParent};
+use llvm_sys::{core::{LLVMDumpModule, LLVMDisposeModule, LLVMPrintModuleToString, LLVMInstructionEraseFromParent, LLVMGetTarget}, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCodeGenFileType, LLVMTargetMachineEmitToFile, LLVMGetTargetMachineTriple}, target::*};
 
 use crate::{parser::Parser, codegen::CodeGen};
 
@@ -44,9 +44,9 @@ fn main() -> Result<()> {
         }
     };
 
-    println!("==============");
     let now = Instant::now();
     unsafe {
+        let output = "output.o";
         let mut codegen = CodeGen::new(parser.exprs);
         match codegen.gen_code() {
             Ok(f) => {
@@ -58,6 +58,11 @@ fn main() -> Result<()> {
             }
         };
         LLVMDumpModule(codegen.module);
+        let error = "\0".to_string().as_mut_ptr();
+        let codegen_type = LLVMCodeGenFileType::LLVMObjectFile;
+        if LLVMTargetMachineEmitToFile(codegen.machine, codegen.module, output.to_string().as_mut_ptr() as *mut _, codegen_type, error.cast()) == 1 {
+            eprintln!("Couldn't output file: {:?}", CString::from_raw(error as *mut _));
+        }
         codegen.end();
     }
     let elapsed_time = now.elapsed();

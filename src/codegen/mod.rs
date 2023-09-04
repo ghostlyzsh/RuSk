@@ -1,8 +1,8 @@
-use std::{ffi::CString, collections::HashMap};
+use std::{ffi::CString, collections::HashMap, fs::File};
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::scalar::{LLVMAddReassociatePass, LLVMAddInstructionCombiningPass}, LLVMRealPredicate, LLVMTypeKind};
+use llvm_sys::{prelude::*, core::*, transforms::scalar::{LLVMAddReassociatePass, LLVMAddInstructionCombiningPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetTargetFromName, LLVMGetFirstTarget, LLVMTargetMachineEmitToFile, LLVMCodeGenFileType, LLVMTargetMachineRef}};
 
 use self::error::{CodeGenError, ErrorKind};
 
@@ -13,16 +13,44 @@ pub struct CodeGen {
     builder: LLVMBuilderRef,
     opt_passes: LLVMPassManagerRef,
     scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Type, Alloc)
+    functions: HashMap<String, LLVMTypeRef>,
+    pub machine: LLVMTargetMachineRef,
 }
 
 impl CodeGen {
     pub unsafe fn new(exprs: Vec<P<Expr>>) -> Self {
+        let target_triple = LLVMGetDefaultTargetTriple();
+        LLVM_InitializeAllTargetInfos();
+        LLVM_InitializeAllTargets();
+        LLVM_InitializeAllTargetMCs();
+        LLVM_InitializeAllAsmParsers();
+        LLVM_InitializeAllAsmPrinters();
+
+        let target: *mut LLVMTargetRef = LLVMGetFirstTarget().cast();
+        let error = "\0".to_string().as_mut_ptr().cast();
+        if LLVMGetTargetFromTriple(target_triple, target, error) == 1 {
+            eprintln!("Couldn't get target from triple: {:?}", error);
+            std::process::exit(1);
+        }
+
+        let cpu = "generic\0".as_ptr() as *const _;
+        let features = "\0".as_ptr() as *const _;
+        let model = LLVMCodeModel::LLVMCodeModelDefault;
+        let reloc = LLVMRelocMode::LLVMRelocDefault;
+        let level = LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
+        let target_machine = LLVMCreateTargetMachine(target.cast(), target_triple,
+            cpu, features, level, reloc, model);
+
         let context = LLVMContextCreate();
         let module = LLVMModuleCreateWithNameInContext(b"RuSk_codegen\0".as_ptr() as *const _, context);
+        LLVMSetTarget(module, target_triple);
+        LLVMSetDataLayout(module, LLVMCreateTargetDataLayout(target_machine).cast());
+
         let builder = LLVMCreateBuilderInContext(context);
         let opt_passes = LLVMCreateFunctionPassManager(LLVMCreateModuleProviderForExistingModule(module));
         LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
+
         CodeGen {
             context,
             module,
@@ -30,6 +58,8 @@ impl CodeGen {
             exprs,
             opt_passes,
             scopes: vec![HashMap::new()],
+            functions: HashMap::new(),
+            machine: target_machine,
         }
     }
 
@@ -41,18 +71,21 @@ impl CodeGen {
 
     pub unsafe fn gen_code(&mut self) -> Result<LLVMValueRef> {
         let void = LLVMVoidTypeInContext(self.context);
-        let function_type = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
-        let function = LLVMAddFunction(self.module, b"__anon_expr\0".as_ptr() as *const _, function_type);
-        let bb = LLVMAppendBasicBlockInContext(self.context,
-            function,
-            b"entry\0".as_ptr() as *const _,
-        );
-        LLVMPositionBuilderAtEnd(self.builder, bb);
+        // ========== hardcoded print ==========
         let params = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
         let print_type = LLVMFunctionType(void, [params].as_mut_ptr(), 1, 0);
-        LLVMAddFunction(self.module, "print\0".as_ptr() as *const _, print_type);
-        LLVMDumpType(print_type);
-        print!("\n");
+        LLVMAddFunction(self.module, "puts\0".as_ptr() as *const _, print_type);
+        self.functions.insert("puts".to_string(), print_type);
+        // ========== hardcoded print ==========
+
+        let function_type = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
+        let function = LLVMAddFunction(self.module, b"_start\0".as_ptr() as *const _, function_type);
+        let bb = LLVMAppendBasicBlockInContext(self.context,
+            function,
+            b"_start\0".as_ptr() as *const _,
+        );
+        LLVMPositionBuilderAtEnd(self.builder, bb);
+
         let mut errored = (false, String::new());
         for p_expr in self.exprs.clone() {
             let expr = p_expr.into_inner();
@@ -214,7 +247,6 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_variable(&mut self, variable: Variable, line: u32) -> Result<LLVMValueRef> {
-        println!("scope: {:?}", self.scopes.last());
         let var = match self.scopes.last().unwrap().get(&variable.name.0) {
             Some(v) => v,
             None => return Err(CodeGenError {
@@ -223,7 +255,6 @@ impl CodeGen {
                 line,
             }.into())
         };
-        println!("variable: {:?}", var);
         if var.1.is_null() {
             return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,
@@ -236,7 +267,17 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_call(&mut self, ident: Ident, args: Vec<P<Expr>>, line: u32) -> Result<LLVMValueRef> {
-        let function = LLVMGetNamedFunction(self.module, (ident.0 + "\0").as_ptr() as *const _);
+        let function = LLVMGetNamedFunction(self.module, (ident.0.clone() + "\0").as_ptr() as *const _);
+        let function_type = *match self.functions.get(&ident.0) {
+            Some(t) => t,
+            None => {
+                return Err(CodeGenError {
+                    kind: ErrorKind::NotInScope,
+                    message: "Function not found".to_string(),
+                    line,
+                }.into())
+            }
+        };
         if function.is_null() {
             return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,
@@ -244,8 +285,9 @@ impl CodeGen {
                 line,
             }.into())
         }
+        let param_num = LLVMCountParamTypes(function_type);
 
-        if LLVMCountParams(function) != args.len() as u32 {
+        if param_num != args.len() as u32 {
             return Err(CodeGenError {
                 kind: ErrorKind::InvalidArgs,
                 message: "Wrong number of arguments in function call".to_string(),
@@ -253,9 +295,13 @@ impl CodeGen {
             }.into())
         }
 
+        let mut arg_types = Vec::with_capacity(param_num as usize);
+        LLVMGetParamTypes(function_type, arg_types.as_mut_ptr());
+        arg_types.set_len(param_num as usize);
+
         let mut argsV = Vec::new();
-        for arg in args {
-            let arg = arg.into_inner();
+        for (i, arg) in args.iter().enumerate() {
+            let arg = arg.clone().into_inner();
             let mut arg = self.match_expr(arg)?;
             if arg.is_null() {
                 return Err(CodeGenError {
@@ -268,14 +314,18 @@ impl CodeGen {
                 let element_type = LLVMGetElementType(LLVMTypeOf(arg));
                 arg = LLVMConstPointerCast(arg, LLVMPointerType(element_type, 0));
             }
+
+            if LLVMTypeOf(arg) != arg_types[i] {
+                return Err(CodeGenError {
+                    kind: ErrorKind::MismatchedTypes,
+                    message: format!("Argument {} has wrong type", i),
+                    line,
+                }.into())
+            }
             argsV.push(arg);
         }
-        LLVMDumpValue(argsV[0]);
-        print!("\n");
-        LLVMDumpType(LLVMTypeOf(function));
-        print!("\n");
 
-        Ok(LLVMBuildCall2(self.builder, LLVMTypeOf(function), function,
+        Ok(LLVMBuildCall2(self.builder, function_type, function,
             argsV.as_mut_ptr(), argsV.len() as u32, "calltmp\0".as_ptr() as *const _))
     }
     
