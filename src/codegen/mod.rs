@@ -198,6 +198,7 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_block(&mut self, block: Block) -> Result<LLVMValueRef> {
+        self.scopes.push(HashMap::new());
         let mut errored = (false, String::new());
         let mut last = LLVMConstNull(LLVMVoidType());
         for p_expr in block.exprs.clone() {
@@ -216,6 +217,7 @@ impl CodeGen {
         if errored.0 {
             return Err(anyhow!(errored.1));
         }
+        self.scopes.pop();
 
         Ok(last)
     }
@@ -311,7 +313,16 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_variable(&mut self, variable: Variable, line: u32) -> Result<LLVMValueRef> {
-        let var = match self.scopes.last().unwrap().get(&variable.name.0) {
+        let mut var = None;
+        self.scopes.iter().for_each(|scope| {
+            match scope.get(&variable.name.0) {
+                Some(v) => {
+                    var = Some(v)
+                }
+                None => {}
+            };
+        });
+        let var = match var {
             Some(v) => v,
             None => return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,

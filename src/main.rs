@@ -33,7 +33,7 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    //println!("Tokens: {:#?}", lexer.tokens);
+    println!("Tokens: {:#?}", lexer.tokens);
     let mut parser = Parser::new(lexer.tokens, options.file, contents);
     match parser.parse() {
         Ok(_) => {}

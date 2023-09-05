@@ -237,13 +237,32 @@ impl Lexer {
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
         while c[0] != b'"' {
-            name.push(c[0] as char);
             if c[0] == b'\n' {
                 self.tokens.write_one(self.token_from_type(TokenType::Newline));
                 self.file.set_position(self.file.position()-1);
                 return Err(self.error(2, "Unexpected end of line".to_string(), 1, Some("help: remove new line".to_string())));
             };
-            self.file.read(&mut c).unwrap();
+            if c[0] == b'\\' {
+                self.file.read(&mut c).unwrap();
+                match c[0] {
+                    b'0' => name.push(0 as char),
+                    b'a' => name.push(7 as char),
+                    b'b' => name.push(8 as char),
+                    b'n' => name.push(10 as char),
+                    b'v' => name.push(11 as char),
+                    b'f' => name.push(12 as char),
+                    b'r' => name.push(13 as char),
+                    b'\\' => name.push(b'\\' as char),
+                    b'\'' => name.push(b'\'' as char),
+                    b'\"' => name.push(b'\"' as char),
+                    b'?' => name.push(b'?' as char),
+                    _ => return Err(self.error(2, "Invalid escape".to_string(), 0, None))
+                }
+                self.file.read(&mut c).unwrap();
+            } else {
+                name.push(c[0] as char);
+                self.file.read(&mut c).unwrap();
+            }
         }
 
         self.tokens.write_one(self.token_from_type(TokenType::Text(name)));
