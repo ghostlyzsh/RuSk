@@ -1,8 +1,8 @@
-use std::{ffi::CString, collections::HashMap, fs::File};
+use std::{ffi::CString, collections::HashMap};
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::scalar::{LLVMAddReassociatePass, LLVMAddInstructionCombiningPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetTargetFromName, LLVMGetFirstTarget, LLVMTargetMachineEmitToFile, LLVMCodeGenFileType, LLVMTargetMachineRef}};
+use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddInstructionCombiningPass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
 
@@ -12,7 +12,7 @@ pub struct CodeGen {
     pub module: LLVMModuleRef,
     builder: LLVMBuilderRef,
     opt_passes: LLVMPassManagerRef,
-    scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Type, Alloc)
+    scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Value, Type, Alloc)
     functions: HashMap<String, LLVMTypeRef>,
     pub machine: LLVMTargetMachineRef,
 }
@@ -26,30 +26,33 @@ impl CodeGen {
         LLVM_InitializeAllAsmParsers();
         LLVM_InitializeAllAsmPrinters();
 
-        let target: *mut LLVMTargetRef = LLVMGetFirstTarget().cast();
-        let error = "\0".to_string().as_mut_ptr().cast();
-        if LLVMGetTargetFromTriple(target_triple, target, error) == 1 {
+        let mut target: LLVMTargetRef = LLVMGetFirstTarget().cast();
+        let mut error = "\0".to_string().as_mut_ptr().cast();
+        if LLVMGetTargetFromTriple(target_triple, &mut target, &mut error) == 1 {
             eprintln!("Couldn't get target from triple: {:?}", error);
             std::process::exit(1);
         }
 
         let cpu = "generic\0".as_ptr() as *const _;
-        let features = "\0".as_ptr() as *const _;
+        //let features = "\0".as_ptr() as *const _;
         let model = LLVMCodeModel::LLVMCodeModelDefault;
         let reloc = LLVMRelocMode::LLVMRelocDefault;
         let level = LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
-        let target_machine = LLVMCreateTargetMachine(target.cast(), target_triple,
-            cpu, features, level, reloc, model);
+        let target_machine = LLVMCreateTargetMachine(target, target_triple,
+            cpu, LLVMGetHostCPUFeatures(), level, reloc, model);
 
         let context = LLVMContextCreate();
         let module = LLVMModuleCreateWithNameInContext(b"RuSk_codegen\0".as_ptr() as *const _, context);
         LLVMSetTarget(module, target_triple);
-        LLVMSetDataLayout(module, LLVMCreateTargetDataLayout(target_machine).cast());
+        LLVMSetDataLayout(module, LLVMCopyStringRepOfTargetData(LLVMCreateTargetDataLayout(target_machine)));
 
         let builder = LLVMCreateBuilderInContext(context);
         let opt_passes = LLVMCreateFunctionPassManager(LLVMCreateModuleProviderForExistingModule(module));
+        LLVMAddPromoteMemoryToRegisterPass(opt_passes);
         LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
+        LLVMAddGVNPass(opt_passes);
+        LLVMAddCFGSimplificationPass(opt_passes);
 
         CodeGen {
             context,
@@ -70,19 +73,20 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_code(&mut self) -> Result<LLVMValueRef> {
-        let void = LLVMVoidTypeInContext(self.context);
+        //let void = LLVMVoidTypeInContext(self.context);
+        let int32 = LLVMInt32TypeInContext(self.context);
         // ========== hardcoded print ==========
         let params = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-        let print_type = LLVMFunctionType(void, [params].as_mut_ptr(), 1, 0);
+        let print_type = LLVMFunctionType(int32, [params].as_mut_ptr(), 1, 0);
         LLVMAddFunction(self.module, "puts\0".as_ptr() as *const _, print_type);
         self.functions.insert("puts".to_string(), print_type);
         // ========== hardcoded print ==========
 
-        let function_type = LLVMFunctionType(void, std::ptr::null_mut(), 0, 0);
-        let function = LLVMAddFunction(self.module, b"_start\0".as_ptr() as *const _, function_type);
+        let function_type = LLVMFunctionType(int32, LLVMInt32TypeInContext(self.context).cast(), 0, 0);
+        let function = LLVMAddFunction(self.module, b"main\0".as_ptr() as *const _, function_type);
         let bb = LLVMAppendBasicBlockInContext(self.context,
             function,
-            b"_start\0".as_ptr() as *const _,
+            b"\0".as_ptr() as *const _,
         );
         LLVMPositionBuilderAtEnd(self.builder, bb);
 
@@ -102,9 +106,9 @@ impl CodeGen {
         if errored.0 {
             return Err(anyhow!(errored.1));
         }
-        LLVMBuildRetVoid(self.builder);
+        LLVMBuildRet(self.builder, LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0));
 
-        //LLVMRunFunctionPassManager(self.opt_passes, function);
+        LLVMRunFunctionPassManager(self.opt_passes, function);
 
         Ok(function)
     }
@@ -198,7 +202,7 @@ impl CodeGen {
 
     pub unsafe fn gen_block(&mut self, block: Block) -> Result<LLVMValueRef> {
         let mut errored = (false, String::new());
-        let mut last: LLVMValueRef = LLVMConstNull(LLVMVoidType());
+        let mut last = LLVMConstNull(LLVMVoidType());
         for p_expr in block.exprs.clone() {
             let expr = p_expr.into_inner();
 
@@ -239,7 +243,7 @@ impl CodeGen {
         let value_type = LLVMTypeOf(value);
 
         let name = variable.name.0;
-        let alloc = LLVMBuildAlloca(self.builder, value_type, (name.clone() + "\0").as_ptr() as *const _);
+        let alloc = LLVMBuildAlloca(self.builder, value_type, "\0".as_ptr() as *const _);
         LLVMBuildStore(self.builder, value, alloc);
         self.scopes.last_mut().unwrap().insert(name, (LLVMTypeOf(value), alloc));
 
@@ -255,7 +259,7 @@ impl CodeGen {
                 line,
             }.into())
         };
-        if var.1.is_null() {
+        if var.0.is_null() {
             return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,
                 message: "Variable not in scope".to_string(),
@@ -263,7 +267,7 @@ impl CodeGen {
             }.into())
         }
 
-        Ok(LLVMBuildLoad2(self.builder, var.0, var.1, variable.name.0.as_ptr() as *const _))
+        Ok(LLVMBuildLoad2(self.builder, var.0, var.1, "\0".as_ptr() as *const _))
     }
 
     pub unsafe fn gen_call(&mut self, ident: Ident, args: Vec<P<Expr>>, line: u32) -> Result<LLVMValueRef> {
@@ -312,7 +316,10 @@ impl CodeGen {
             }
             if LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMTypeKind::LLVMArrayTypeKind {
                 let element_type = LLVMGetElementType(LLVMTypeOf(arg));
-                arg = LLVMConstPointerCast(arg, LLVMPointerType(element_type, 0));
+                let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
+                println!("{}", num_indices);
+                let mut int = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                arg = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg, &mut int, 0, "\0".as_ptr() as *const _);
             }
 
             if LLVMTypeOf(arg) != arg_types[i] {
@@ -325,8 +332,9 @@ impl CodeGen {
             argsV.push(arg);
         }
 
-        Ok(LLVMBuildCall2(self.builder, function_type, function,
-            argsV.as_mut_ptr(), argsV.len() as u32, "calltmp\0".as_ptr() as *const _))
+        let ret = LLVMBuildCall2(self.builder, function_type, function,
+            argsV.as_mut_ptr(), argsV.len() as u32, "\0".as_ptr() as *const _);
+        Ok(ret)
     }
     
     pub unsafe fn gen_binary(&mut self, binop: BinOp, e_lhs: Expr, e_rhs: Expr) -> Result<LLVMValueRef> {
@@ -367,7 +375,7 @@ impl CodeGen {
         match lit {
             Literal::Text(text) => {
                 let c_str = CString::new(text.clone()).unwrap();
-                Ok(LLVMConstStringInContext(self.context, c_str.as_ptr(), text.len() as u32, 0))
+                Ok(LLVMBuildGlobalStringPtr(self.builder, c_str.as_ptr(), "\0".as_ptr() as *const _))
             }
             Literal::Number(num) => {
                 Ok(LLVMConstReal(LLVMFloatTypeInContext(self.context), num))

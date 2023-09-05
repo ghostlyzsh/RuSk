@@ -26,6 +26,7 @@ impl CodeGenError {
             ErrorKind::Null => 3002,
             ErrorKind::NotInScope => 3003,
             ErrorKind::InvalidArgs => 3004,
+            ErrorKind::InvalidType => 3005,
             ErrorKind::Invalid => 0,
         };
 
@@ -49,6 +50,7 @@ pub enum ErrorKind {
     Null,
     NotInScope,
     InvalidArgs,
+    InvalidType,
     Invalid,
 }
 impl From<u32> for ErrorKind {
@@ -58,6 +60,7 @@ impl From<u32> for ErrorKind {
             3002 => Self::Null,
             3003 => Self::NotInScope,
             3004 => Self::InvalidArgs,
+            3005 => Self::InvalidType,
             _ => Self::Invalid,
         }
     }
@@ -71,6 +74,7 @@ impl ErrorKind {
             Null => "found null",
             NotInScope => "not in scope",
             InvalidArgs => "invalid arguments",
+            InvalidType => "invalid type",
             Invalid => "invalid",
         }
     }

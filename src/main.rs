@@ -1,12 +1,11 @@
 #![allow(non_snake_case)]
 
-use std::{time::Instant, ffi::CString};
+use std::ffi::CString;
 
 use anyhow::Result;
 use argh::FromArgs;
-use lazy_static::lazy_static;
 use lexer::Lexer;
-use llvm_sys::{core::{LLVMDumpModule, LLVMDisposeModule, LLVMPrintModuleToString, LLVMInstructionEraseFromParent, LLVMGetTarget}, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCodeGenFileType, LLVMTargetMachineEmitToFile, LLVMGetTargetMachineTriple}, target::*};
+use llvm_sys::target_machine::{LLVMCodeGenFileType, LLVMTargetMachineEmitToFile};
 
 use crate::{parser::Parser, codegen::CodeGen};
 
@@ -44,28 +43,23 @@ fn main() -> Result<()> {
         }
     };
 
-    let now = Instant::now();
     unsafe {
         let output = "output.o";
         let mut codegen = CodeGen::new(parser.exprs);
         match codegen.gen_code() {
-            Ok(f) => {
-            }
+            Ok(_) => {}
             Err(e) => {
                 println!("error");
                 eprint!("{}", e);
                 std::process::exit(1);
             }
         };
-        LLVMDumpModule(codegen.module);
-        let error = "\0".to_string().as_mut_ptr();
+        let mut error = std::ptr::null_mut();
         let codegen_type = LLVMCodeGenFileType::LLVMObjectFile;
-        if LLVMTargetMachineEmitToFile(codegen.machine, codegen.module, output.to_string().as_mut_ptr() as *mut _, codegen_type, error.cast()) == 1 {
+        if LLVMTargetMachineEmitToFile(codegen.machine, codegen.module, output.to_string().as_mut_ptr() as *mut _, codegen_type, &mut error) == 1 {
             eprintln!("Couldn't output file: {:?}", CString::from_raw(error as *mut _));
         }
         codegen.end();
     }
-    let elapsed_time = now.elapsed();
-    println!("Took {} ns", elapsed_time.as_nanos());
     Ok(())
 }
