@@ -61,6 +61,8 @@ impl Parser {
                     self.if_statement()
                 } else if s == "set" {
                     self.set_statement()
+                } else if s == "native" {
+                    self.native_function()
                 } else {
                     self.call_expression()
                 }
@@ -120,6 +122,115 @@ impl Parser {
             }
         }
         Err(anyhow!("Parser Error: set"))
+    }
+    pub fn native_function(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "native" {
+                self.consume(TokenType::Ident("function".to_string()), "Expected \"function\"".to_string())?;
+                if let TokenType::Ident(name) = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    self.consume(TokenType::LeftParen, "Expected \"(\"".to_string())?;
+                    let args = self.types()?;
+                    let mut var = false;
+                    if let TokenType::Ellipsis = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                        var = true;
+                    }
+                    self.consume(TokenType::RightParen, "Expected \")\" after arguments".to_string())?;
+                    if let TokenType::ColonColon = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                        let ret_type = Expr {
+                            kind: ExprKind::Type(self.match_type()?),
+                            line: token.line,
+                        };
+                        return Ok(Expr { kind: ExprKind::Native(Ident(name), args, var, Some(P(ret_type))), line: token.line })
+                    }
+                    return Ok(Expr { kind: ExprKind::Native(Ident(i), args, var, None), line: token.line })
+                } else {
+                    return Err(self.error(1005, "Expected function name".to_string(), None, 0, token));
+                }
+            }
+        }
+        Err(anyhow!("Parser Error: native function"))
+    }
+    pub fn types(&mut self) -> Result<Vec<P<Expr>>> {
+        let mut exprs = Vec::new();
+        while let TokenType::Ident(ident) = self.tokens.peek()?.token_type {
+            let token = self.tokens.read()?;
+            self.consume(TokenType::Colon, "Expected \":\" in type declaration".to_string())?;
+            if let TokenType::Ident(t) = self.tokens.peek()?.token_type {
+                self.tokens.read()?;
+                let tt;
+                match t.as_str() {
+                    "text" => {
+                        tt = Type::Text;
+                    }
+                    "number" => {
+                        tt = Type::Number;
+                    }
+                    "int" => {
+                        tt = Type::Integer;
+                    }
+                    "integer" => {
+                        tt = Type::Integer;
+                    }
+                    "bool" => {
+                        tt = Type::Boolean;
+                    }
+                    "boolean" => {
+                        tt = Type::Boolean;
+                    }
+                    t => {
+                        return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
+                    }
+                }
+                exprs.push(P(Expr {
+                    kind: ExprKind::Arg(Ident(ident), tt),
+                    line: token.line,
+                }));
+                if let TokenType::Comma = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                } else {
+                    return Ok(exprs);
+                }
+            } else {
+                return Err(self.error(1002, "Expected identifier".to_string(), None, 0, token));
+            }
+        }
+        return Ok(exprs);
+    }
+    pub fn match_type(&mut self) -> Result<Type> {
+        if let TokenType::Ident(ident) = self.tokens.peek()?.token_type {
+            let token = self.tokens.read()?;
+            let tt;
+            match ident.as_str() {
+                "text" => {
+                    tt = Type::Text;
+                }
+                "number" => {
+                    tt = Type::Number;
+                }
+                "int" => {
+                    tt = Type::Integer;
+                }
+                "integer" => {
+                    tt = Type::Integer;
+                }
+                "bool" => {
+                    tt = Type::Boolean;
+                }
+                "boolean" => {
+                    tt = Type::Boolean;
+                }
+                t => {
+                    return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
+                }
+            }
+            Ok(tt)
+        } else {
+            Err(self.error(1002, "Expected type".to_string(), None, 0, self.tokens.peek()?))
+        }
     }
 
     pub fn block(&mut self) -> Result<Block> {
@@ -239,7 +350,8 @@ impl Parser {
                         name: Ident(name),
                         list_mode: Some(VariableListMode::All),
                         visibility,
-                        })
+                        mutable: false,
+                    })
                 } else {
                     let expr = self.expression()?;
                     self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
@@ -247,6 +359,7 @@ impl Parser {
                         name: Ident(name),
                         list_mode: Some(VariableListMode::Index(P(expr))),
                         visibility,
+                        mutable: false,
                     })
                 }
             } else {
@@ -255,6 +368,7 @@ impl Parser {
                     name: Ident(name),
                     list_mode: None,
                     visibility,
+                    mutable: false,
                 })
             }
         } else {
@@ -496,6 +610,13 @@ impl Parser {
                 line: token.line,
             });
         }
+        if let TokenType::Integer(n) = self.tokens.peek()?.token_type {
+            let token = self.tokens.read()?;
+            return Ok(Expr {
+                kind: ExprKind::Lit(Literal::Integer(n)),
+                line: token.line,
+            });
+        }
         if let TokenType::Text(s) = self.tokens.peek()?.token_type {
             let token = self.tokens.read()?;
             return Ok(Expr {
@@ -629,11 +750,13 @@ pub enum ExprKind {
     Unary(UnOp, P<Expr>),
     If(P<Expr>, P<Block>),
     Switch(P<Expr>, Vec<Arm>),
-    Native(Ident, Vec<P<Expr>>, Option<P<Expr>>),
+    Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
     Var(Variable),
     Lit(Literal),
     Ident(Ident),
+    Arg(Ident, Type),
+    Type(Type),
 }
 
 #[derive(Clone, Debug)]
@@ -686,7 +809,16 @@ pub struct Ident(pub String);
 pub enum Literal {
     Text(String),
     Number(f64),
+    Integer(i64),
     Boolean(bool),
+}
+
+#[derive(Clone, Debug)]
+pub enum Type {
+    Text,
+    Number,
+    Integer,
+    Boolean,
 }
 
 #[derive(Clone, Debug)]
@@ -695,6 +827,7 @@ pub struct Variable {
     pub name: Ident,
     pub list_mode: Option<VariableListMode>,
     pub visibility: VisibilityMode,
+    pub mutable: bool,
 }
 
 #[derive(Clone, Debug)]

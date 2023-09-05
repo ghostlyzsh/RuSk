@@ -95,6 +95,15 @@ impl Lexer {
                 ')' => self.tokens.write_one(self.token_from_type(TokenType::RightParen)),
                 '=' => self.tokens.write_one(self.token_from_type(TokenType::Equals)),
                 ',' => self.tokens.write_one(self.token_from_type(TokenType::Comma)),
+                '.' => {
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'.' {
+                        self.file.read(&mut c).unwrap();
+                        if c[0] == b'.' {
+                            self.tokens.write_one(self.token_from_type(TokenType::Ellipsis))
+                        }
+                    }
+                }
                 '<' => {
                     self.file.read(&mut c).unwrap();
                     if c[0] == b'=' {
@@ -257,15 +266,19 @@ impl Lexer {
                     number.push(c[0] as char);
                     self.file.read(&mut c).unwrap();
                 }
+                self.file.set_position(self.file.position()-1);
+
+                self.tokens.write_one(self.token_from_type(TokenType::Number(number.parse().unwrap())));
             }
             else {
                 self.file.set_position(self.file.position()+1);
                 return Err(self.error(3, "Unexpected end of number".to_string(), 0, Some("help: remove trailing decimal point".to_string())));
             }
-        }
-        self.file.set_position(self.file.position()-1);
+        } else {
+            self.file.set_position(self.file.position()-1);
 
-        self.tokens.write_one(self.token_from_type(TokenType::Number(number.parse().unwrap())));
+            self.tokens.write_one(self.token_from_type(TokenType::Integer(number.parse().unwrap())));
+        }
         Ok(())
     }
     fn identifier(&mut self) {

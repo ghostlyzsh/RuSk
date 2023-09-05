@@ -1,6 +1,6 @@
 use std::{ffi::CString, collections::HashMap};
 
-use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident};
+use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type};
 use anyhow::{Result, anyhow};
 use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddInstructionCombiningPass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
@@ -13,7 +13,7 @@ pub struct CodeGen {
     builder: LLVMBuilderRef,
     opt_passes: LLVMPassManagerRef,
     scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Value, Type, Alloc)
-    functions: HashMap<String, LLVMTypeRef>,
+    functions: HashMap<String, (LLVMTypeRef, bool)>,
     pub machine: LLVMTargetMachineRef,
 }
 
@@ -75,12 +75,6 @@ impl CodeGen {
     pub unsafe fn gen_code(&mut self) -> Result<LLVMValueRef> {
         //let void = LLVMVoidTypeInContext(self.context);
         let int32 = LLVMInt32TypeInContext(self.context);
-        // ========== hardcoded print ==========
-        let params = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-        let print_type = LLVMFunctionType(int32, [params].as_mut_ptr(), 1, 0);
-        LLVMAddFunction(self.module, "puts\0".as_ptr() as *const _, print_type);
-        self.functions.insert("puts".to_string(), print_type);
-        // ========== hardcoded print ==========
 
         let function_type = LLVMFunctionType(int32, LLVMInt32TypeInContext(self.context).cast(), 0, 0);
         let function = LLVMAddFunction(self.module, b"main\0".as_ptr() as *const _, function_type);
@@ -135,6 +129,9 @@ impl CodeGen {
             }
             ExprKind::Call(ident, args) => {
                 self.gen_call(ident, args, expr.line)
+            }
+            ExprKind::Native(name, args, var, ret) => {
+                self.gen_native(name, args, var, ret)
             }
             _ => {
                 Err(CodeGenError {
@@ -250,6 +247,69 @@ impl CodeGen {
         Ok(value)
     }
 
+    pub unsafe fn gen_native(&mut self, name: Ident, args: Vec<P<Expr>>, var: bool, ret: Option<P<Expr>>) -> Result<LLVMValueRef> {
+        let mut args_type = Vec::new();
+        for arg in args {
+            let arg = arg.into_inner();
+            if let ExprKind::Arg(ident, t) = arg.kind {
+                let tt;
+                match t {
+                    Type::Text => {
+                        tt = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+                    }
+                    Type::Number => {
+                        tt = LLVMFloatType();
+                    }
+                    Type::Integer => {
+                        tt = LLVMInt64Type();
+                    }
+                    Type::Boolean => {
+                        tt = LLVMInt1Type();
+                    }
+                }
+                args_type.push((ident.0, tt));
+            } else {
+                return Err(CodeGenError {
+                    kind: ErrorKind::Invalid,
+                    message: "Parser broke".to_string(),
+                    line: arg.line,
+                }.into())
+            }
+        }
+        let mut ret_type = LLVMVoidType();
+        if let Some(ret) = ret {
+            let ret = ret.into_inner();
+            if let ExprKind::Type(t) = ret.kind {
+                match t {
+                    Type::Text => {
+                        ret_type = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+                    }
+                    Type::Number => {
+                        ret_type = LLVMFloatType();
+                    }
+                    Type::Integer => {
+                        ret_type = LLVMInt64Type();
+                    }
+                    Type::Boolean => {
+                        ret_type = LLVMInt1Type();
+                    }
+                }
+            } else {
+                return Err(CodeGenError {
+                    kind: ErrorKind::Invalid,
+                    message: "Parser broke".to_string(),
+                    line: ret.line,
+                }.into())
+            }
+        }
+        let function_type = LLVMFunctionType(ret_type, args_type.iter().map(|v| v.1).collect::<Vec<_>>().as_mut_ptr(), args_type.len() as u32, var as i32);
+
+        LLVMAddFunction(self.module, (name.0.clone() + "\0").as_ptr() as *const _, function_type);
+        self.functions.insert(name.0, (function_type, var));
+
+        Ok(LLVMConstNull(LLVMFloatTypeInContext(self.context)))
+    }
+
     pub unsafe fn gen_variable(&mut self, variable: Variable, line: u32) -> Result<LLVMValueRef> {
         let var = match self.scopes.last().unwrap().get(&variable.name.0) {
             Some(v) => v,
@@ -289,19 +349,21 @@ impl CodeGen {
                 line,
             }.into())
         }
-        let param_num = LLVMCountParamTypes(function_type);
-
-        if param_num != args.len() as u32 {
-            return Err(CodeGenError {
-                kind: ErrorKind::InvalidArgs,
-                message: "Wrong number of arguments in function call".to_string(),
-                line,
-            }.into())
-        }
+        let param_num = LLVMCountParamTypes(function_type.0);
 
         let mut arg_types = Vec::with_capacity(param_num as usize);
-        LLVMGetParamTypes(function_type, arg_types.as_mut_ptr());
-        arg_types.set_len(param_num as usize);
+        if !function_type.1 {
+            if param_num != args.len() as u32 {
+                return Err(CodeGenError {
+                    kind: ErrorKind::InvalidArgs,
+                    message: "Wrong number of arguments in function call".to_string(),
+                    line,
+                }.into())
+            }
+
+            LLVMGetParamTypes(function_type.0, arg_types.as_mut_ptr());
+            arg_types.set_len(param_num as usize);
+        }
 
         let mut argsV = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -314,25 +376,27 @@ impl CodeGen {
                     line,
                 }.into())
             }
-            if LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMTypeKind::LLVMArrayTypeKind {
-                let element_type = LLVMGetElementType(LLVMTypeOf(arg));
-                let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
-                println!("{}", num_indices);
-                let mut int = LLVMConstInt(LLVMInt32Type(), 0, 0);
-                arg = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg, &mut int, 0, "\0".as_ptr() as *const _);
-            }
+            if !function_type.1 {
+                if LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMTypeKind::LLVMArrayTypeKind {
+                    let element_type = LLVMGetElementType(LLVMTypeOf(arg));
+                    let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
+                    println!("{}", num_indices);
+                    let mut int = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                    arg = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg, &mut int, 0, "\0".as_ptr() as *const _);
+                }
 
-            if LLVMTypeOf(arg) != arg_types[i] {
-                return Err(CodeGenError {
-                    kind: ErrorKind::MismatchedTypes,
-                    message: format!("Argument {} has wrong type", i),
-                    line,
-                }.into())
+                if LLVMTypeOf(arg) != arg_types[i] {
+                    return Err(CodeGenError {
+                        kind: ErrorKind::MismatchedTypes,
+                        message: format!("Argument {} has wrong type", i),
+                        line,
+                    }.into())
+                }
             }
             argsV.push(arg);
         }
 
-        let mut ret = LLVMBuildCall2(self.builder, function_type, function,
+        let mut ret = LLVMBuildCall2(self.builder, function_type.0, function,
             argsV.as_mut_ptr(), argsV.len() as u32, "\0".as_ptr() as *const _);
         if LLVMGetTypeKind(LLVMTypeOf(ret)) == LLVMTypeKind::LLVMIntegerTypeKind {
             ret = LLVMBuildUIToFP(self.builder, ret, LLVMFloatTypeInContext(self.context), "\0".as_ptr() as *const _);
@@ -382,6 +446,9 @@ impl CodeGen {
             }
             Literal::Number(num) => {
                 Ok(LLVMConstReal(LLVMFloatTypeInContext(self.context), num))
+            }
+            Literal::Integer(num) => {
+                Ok(LLVMConstInt(LLVMInt64TypeInContext(self.context), std::mem::transmute(num), 1))
             }
             Literal::Boolean(boolean) => {
                 Ok(LLVMConstReal(LLVMFloatTypeInContext(self.context), boolean as u64 as f64))

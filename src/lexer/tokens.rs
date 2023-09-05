@@ -10,8 +10,9 @@ pub enum TokenType {
     LeftBrace, RightBrace, Tilde,
 
     Exp, ColonColon, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
+    Ellipsis,
 
-    Ident(String), Number(f64), Text(String), Boolean(bool),
+    Ident(String), Number(f64), Integer(i64), Text(String), Boolean(bool),
 
     Indent, Dedent,
 }
