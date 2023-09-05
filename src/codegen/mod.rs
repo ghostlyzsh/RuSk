@@ -332,8 +332,11 @@ impl CodeGen {
             argsV.push(arg);
         }
 
-        let ret = LLVMBuildCall2(self.builder, function_type, function,
+        let mut ret = LLVMBuildCall2(self.builder, function_type, function,
             argsV.as_mut_ptr(), argsV.len() as u32, "\0".as_ptr() as *const _);
+        if LLVMGetTypeKind(LLVMTypeOf(ret)) == LLVMTypeKind::LLVMIntegerTypeKind {
+            ret = LLVMBuildUIToFP(self.builder, ret, LLVMFloatTypeInContext(self.context), "\0".as_ptr() as *const _);
+        }
         Ok(ret)
     }
     
