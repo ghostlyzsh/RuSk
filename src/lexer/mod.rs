@@ -248,6 +248,7 @@ impl Lexer {
                     b'0' => name.push(0 as char),
                     b'a' => name.push(7 as char),
                     b'b' => name.push(8 as char),
+                    b't' => name.push(9 as char),
                     b'n' => name.push(10 as char),
                     b'v' => name.push(11 as char),
                     b'f' => name.push(12 as char),

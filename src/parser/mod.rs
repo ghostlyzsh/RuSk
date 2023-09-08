@@ -29,7 +29,8 @@ impl Parser {
                 }
                 Err(e) => {
                     match e.downcast::<TokenError>() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                        }
                         Err(e) => {
                             match e.downcast::<ParserError>() {
                                 Ok(e) => {
@@ -95,10 +96,50 @@ impl Parser {
                     self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
                     self.consume(TokenType::Indent, "Expected indent after \"if\"".to_string())?;
                     let expr = self.block()?;
-                    return Ok(Expr {
-                        kind: ExprKind::If(P(condition), P(expr)),
-                        line: token.line,
-                    });
+                    if self.tokens.is_at_end() {
+                        return Ok(Expr { kind: ExprKind::If(P(condition), P(expr), None), line: token.line });
+                    }
+                    if let TokenType::Ident(i) = self.tokens.peek()?.token_type {
+                        if i == "else" {
+                            let token = self.tokens.read()?;
+                            if self.tokens.is_at_end() {
+                                return Err(self.error(1002, "Unexpected EOF".to_string(), None, 0, token));
+                            }
+                            if let TokenType::Colon = self.tokens.peek()?.token_type {
+                                let token = self.tokens.read()?;
+                                self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
+                                self.consume(TokenType::Indent, "Expected indent after \"else\"".to_string())?;
+                                return Ok(Expr {
+                                    kind: ExprKind::If(P(condition), P(expr), Some(P(Expr {
+                                        kind: ExprKind::Block(P(self.block()?)),
+                                        line: token.line,
+                                    }))),
+                                    line: token.line,
+                                });
+                            } else if let TokenType::Ident(s) = self.tokens.peek()?.token_type {
+                                if s == "if" {
+                                    return Ok(Expr {
+                                        kind: ExprKind::If(P(condition), P(expr), Some(P(self.if_statement()?))),
+                                        line: token.line,
+                                    });
+                                } else {
+                                    return Err(self.error(1005, "Expected \"else if\"".to_string(), None, 0, token))
+                                }
+                            } else {
+                                return Err(self.error(1002, "Expected \":\"".to_string(), None, 0, token))
+                            }
+                        } else {
+                            return Ok(Expr {
+                                kind: ExprKind::If(P(condition), P(expr), None),
+                                line: token.line,
+                            });
+                        }
+                    } else {
+                        return Ok(Expr {
+                            kind: ExprKind::If(P(condition), P(expr), None),
+                            line: token.line,
+                        });
+                    }
                 } else {
                     return Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, colon));
                 }
@@ -238,7 +279,7 @@ impl Parser {
             exprs: Vec::new()
         };
         let mut errored = (false, "".to_string());
-        while self.tokens.peek()?.token_type != TokenType::Dedent {
+        'outer: while self.tokens.peek()?.token_type != TokenType::Dedent {
             match self.statement() {
                 Ok(tree) => {
                     block.exprs.push(P(tree));
@@ -259,6 +300,14 @@ impl Parser {
                     };
                 }
             };
+            while match self.tokens.peek() {
+                Ok(t) => t,
+                Err(_) => {
+                    break 'outer
+                },
+            }.token_type == TokenType::Newline {
+                self.tokens.read().unwrap();
+            }
             if self.tokens.is_at_end() {
                 break;
             }
@@ -748,7 +797,7 @@ pub enum ExprKind {
     Set(Variable, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
-    If(P<Expr>, P<Block>),
+    If(P<Expr>, P<Block>, Option<P<Expr>>),
     Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),

@@ -46,7 +46,7 @@ impl fmt::Display for TokenError {
 
 impl std::error::Error for TokenError {}
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Tokens {
     inner: Vec<Token>,
@@ -58,6 +58,7 @@ impl Tokens {
     pub fn new() -> Self {
         Self { pos: 0, inner: Vec::new() }
     }
+    pub fn get_position(&self) -> u64 { self.pos }
     
     pub fn into_inner(self) -> Vec<Token> {
         self.inner

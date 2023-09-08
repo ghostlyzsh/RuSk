@@ -102,7 +102,7 @@ impl CodeGen {
         }
         LLVMBuildRet(self.builder, LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0));
 
-        LLVMRunFunctionPassManager(self.opt_passes, function);
+        //LLVMRunFunctionPassManager(self.opt_passes, function);
 
         Ok(function)
     }
@@ -124,8 +124,8 @@ impl CodeGen {
             ExprKind::Set(variable, expr) => {
                 self.gen_set(variable, expr.into_inner())
             }
-            ExprKind::If(cond, block) => {
-                self.gen_if(cond.into_inner(), block.into_inner())
+            ExprKind::If(cond, block, el) => {
+                self.gen_if(cond.into_inner(), block.into_inner(), el)
             }
             ExprKind::Call(ident, args) => {
                 self.gen_call(ident, args, expr.line)
@@ -133,17 +133,20 @@ impl CodeGen {
             ExprKind::Native(name, args, var, ret) => {
                 self.gen_native(name, args, var, ret)
             }
+            ExprKind::Block(block) => {
+                self.gen_block(block.into_inner())
+            }
             _ => {
                 Err(CodeGenError {
                     kind: ErrorKind::Invalid,
                     line: expr.line,
-                    message: "Expression type not handled".to_string(),
+                    message: format!("Expression type not handled {:?}", expr.kind),
                 }.into())
             }
         }
     }
 
-    pub unsafe fn gen_if(&mut self, e_condition: Expr, block: Block) -> Result<LLVMValueRef> {
+    pub unsafe fn gen_if(&mut self, e_condition: Expr, block: Block, el: Option<P<Expr>>) -> Result<LLVMValueRef> {
         let condition = self.match_expr(e_condition.clone())?;
         if condition.is_null() {
             return Err(CodeGenError {
@@ -153,48 +156,93 @@ impl CodeGen {
             }.into())
         }
 
-        let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
-        let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
-                                      condition, zero, "ifcond".as_ptr() as *const _);
+        if let Some(expr) = el {
+            let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
+            let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
+                                          condition, zero, "ifcond".as_ptr() as *const _);
 
-        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+            let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
 
-        let thenBB = LLVMAppendBasicBlockInContext(self.context, function,
-                                                   b"then\0".as_ptr() as *const _);
-        let elseBB = LLVMCreateBasicBlockInContext(self.context,
-                                                   b"else\0".as_ptr() as *const _);
-        let mergeBB = LLVMCreateBasicBlockInContext(self.context,
-                                                   b"ifcont\0".as_ptr() as *const _);
-        LLVMBuildCondBr(self.builder, condition, thenBB, elseBB);
+            let thenBB = LLVMAppendBasicBlockInContext(self.context, function,
+                                                       b"then\0".as_ptr() as *const _);
+            let elseBB = LLVMCreateBasicBlockInContext(self.context,
+                                                       b"else\0".as_ptr() as *const _);
+            let mergeBB = LLVMCreateBasicBlockInContext(self.context,
+                                                       b"ifcont\0".as_ptr() as *const _);
+            LLVMBuildCondBr(self.builder, condition, thenBB, elseBB);
 
-        LLVMPositionBuilderAtEnd(self.builder, thenBB);
+            LLVMPositionBuilderAtEnd(self.builder, thenBB);
 
-        // then
-        let then = self.gen_block(block)?;
-        if then.is_null() {
-            return Err(CodeGenError {
-                kind: ErrorKind::Null,
-                message: "\"if\" cannot have return nothing in last expression".to_string(),
-                line: e_condition.line,
-            }.into())
+            // then
+            let mut then = self.gen_block(block.clone())?;
+            if then.is_null() {
+                return Err(CodeGenError {
+                    kind: ErrorKind::Null,
+                    message: "\"if\" cannot have return nothing in last expression".to_string(),
+                    line: e_condition.line,
+                }.into())
+            }
+            LLVMBuildBr(self.builder, mergeBB);
+            let mut thenBB = LLVMGetInsertBlock(self.builder);
+
+            LLVMAppendExistingBasicBlock(function, elseBB);
+            LLVMPositionBuilderAtEnd(self.builder, elseBB);
+            let mut else_v = self.match_expr(expr.into_inner())?;
+            if else_v.is_null() {
+                return Err(CodeGenError {
+                    kind: ErrorKind::Null,
+                    message: "\"if\" cannot have return nothing in last expression".to_string(),
+                    line: e_condition.line,
+                }.into())
+            }
+            LLVMBuildBr(self.builder, mergeBB);
+            let mut elseBB = LLVMGetInsertBlock(self.builder);
+
+            LLVMAppendExistingBasicBlock(function, mergeBB);
+            LLVMPositionBuilderAtEnd(self.builder, mergeBB);
+            let phi = LLVMBuildPhi(self.builder, LLVMTypeOf(then), b"iftmp\0".as_ptr() as *const _);
+            LLVMAddIncoming(phi, &mut then, &mut thenBB, 1);
+            LLVMAddIncoming(phi, &mut else_v, &mut elseBB, 1);
+            Ok(phi)
+        } else {
+            let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
+            let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
+                                          condition, zero, "ifcond".as_ptr() as *const _);
+            
+            let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+            let thenBB = LLVMAppendBasicBlockInContext(self.context, function,
+                                                       b"then\0".as_ptr() as *const _);
+            let elseBB = LLVMCreateBasicBlockInContext(self.context,
+                                                       b"else\0".as_ptr() as *const _);
+            let mergeBB = LLVMCreateBasicBlockInContext(self.context,
+                                                       b"ifcont\0".as_ptr() as *const _);
+            LLVMBuildCondBr(self.builder, condition, thenBB, elseBB);
+
+            LLVMPositionBuilderAtEnd(self.builder, thenBB);
+            let mut then = self.gen_block(block.clone())?;
+            if then.is_null() {
+                return Err(CodeGenError {
+                    kind: ErrorKind::Null,
+                    message: "\"if\" cannot have return nothing in last expression".to_string(),
+                    line: e_condition.line,
+                }.into())
+            }
+            LLVMBuildBr(self.builder, mergeBB);
+            let mut thenBB = LLVMGetInsertBlock(self.builder);
+
+            LLVMAppendExistingBasicBlock(function, elseBB);
+            LLVMPositionBuilderAtEnd(self.builder, elseBB);
+            LLVMBuildBr(self.builder, mergeBB);
+            let mut elseBB = LLVMGetInsertBlock(self.builder);
+
+            LLVMAppendExistingBasicBlock(function, mergeBB);
+            LLVMPositionBuilderAtEnd(self.builder, mergeBB);
+            let phi = LLVMBuildPhi(self.builder, LLVMTypeOf(then), b"iftmp\0".as_ptr() as *const _);
+            LLVMAddIncoming(phi, &mut then, &mut thenBB, 1);
+            LLVMAddIncoming(phi, &mut LLVMConstNull(LLVMTypeOf(then)), &mut elseBB, 1);
+            Ok(then)
         }
-        LLVMBuildBr(self.builder, mergeBB);
-        let thenBB = LLVMGetInsertBlock(self.builder);
 
-        // else
-        LLVMAppendExistingBasicBlock(function, elseBB);
-        LLVMPositionBuilderAtEnd(self.builder, elseBB);
-        // else block
-
-        LLVMBuildBr(self.builder, mergeBB);
-        let elseBB = LLVMGetInsertBlock(self.builder);
-
-        LLVMAppendExistingBasicBlock(function, mergeBB);
-        LLVMPositionBuilderAtEnd(self.builder, mergeBB);
-        let phi = LLVMBuildPhi(self.builder, LLVMTypeOf(then), b"iftmp\0".as_ptr() as *const _);
-        LLVMAddIncoming(phi, then.cast(), thenBB.cast(), 0);
-        LLVMAddIncoming(phi, LLVMTypeOf(then).cast(), elseBB.cast(), 0);
-        Ok(phi)
     }
 
     pub unsafe fn gen_block(&mut self, block: Block) -> Result<LLVMValueRef> {
