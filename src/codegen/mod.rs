@@ -82,10 +82,10 @@ impl CodeGen {
             function,
             b"\0".as_ptr() as *const _,
         );
-        LLVMPositionBuilderAtEnd(self.builder, bb);
 
         let mut errored = (false, String::new());
         for p_expr in self.exprs.clone() {
+            LLVMPositionBuilderAtEnd(self.builder, bb);
             let expr = p_expr.into_inner();
 
             match self.match_expr(expr) {
@@ -100,9 +100,10 @@ impl CodeGen {
         if errored.0 {
             return Err(anyhow!(errored.1));
         }
+        LLVMPositionBuilderAtEnd(self.builder, bb);
         LLVMBuildRet(self.builder, LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0));
 
-        //LLVMRunFunctionPassManager(self.opt_passes, function);
+        LLVMRunFunctionPassManager(self.opt_passes, function);
 
         Ok(function)
     }
@@ -136,6 +137,9 @@ impl CodeGen {
             ExprKind::Block(block) => {
                 self.gen_block(block.into_inner())
             }
+            ExprKind::Function(name, args, block, ret) => {
+                self.gen_function(name, args, block, ret)
+            }
             _ => {
                 Err(CodeGenError {
                     kind: ErrorKind::Invalid,
@@ -144,6 +148,110 @@ impl CodeGen {
                 }.into())
             }
         }
+    }
+
+    pub unsafe fn gen_function(&mut self, name: Ident, args: Vec<P<Expr>>, block: P<Block>, ret: Option<Type>) -> Result<LLVMValueRef> {
+        let mut f_args = Vec::with_capacity(args.len());
+        for arg in args.clone() {
+            if let ExprKind::Arg(_name, ty) = arg.kind.clone() {
+                match ty {
+                    Type::Text => {
+                        f_args.push(LLVMPointerType(LLVMInt8TypeInContext(self.context), 0));
+                    }
+                    Type::Number => {
+                        f_args.push(LLVMFloatTypeInContext(self.context));
+                    }
+                    Type::Integer => {
+                        f_args.push(LLVMInt64TypeInContext(self.context));
+                    }
+                    Type::Boolean => {
+                        f_args.push(LLVMInt1TypeInContext(self.context));
+                    }
+                };
+            } else {
+                return Err(CodeGenError {
+                    kind: ErrorKind::InvalidArgs,
+                    message: "Codegen error: function arg".to_string(),
+                    line: arg.line,
+                }.into())
+            }
+        }
+        let ret_type;
+        if let Some(ty) = ret {
+            match ty {
+                Type::Text => {
+                    ret_type = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+                }
+                Type::Number => {
+                    ret_type = LLVMFloatTypeInContext(self.context);
+                }
+                Type::Integer => {
+                    ret_type = LLVMInt64TypeInContext(self.context);
+                }
+                Type::Boolean => {
+                    ret_type = LLVMInt1TypeInContext(self.context);
+                }
+            }
+        } else {
+            ret_type = LLVMVoidTypeInContext(self.context);
+        }
+        let function_type = LLVMFunctionType(ret_type, f_args.as_mut_ptr(), f_args.len() as u32, 0);
+
+        let function = LLVMAddFunction(self.module, (name.0.clone() + "\0").as_ptr() as *const _, function_type);
+        LLVMSetLinkage(function, llvm_sys::LLVMLinkage::LLVMExternalLinkage);
+
+        let bb = LLVMAppendBasicBlockInContext(self.context, function, format!("{}\0", name.0).as_ptr() as *const _);
+        LLVMPositionBuilderAtEnd(self.builder, bb);
+
+        self.scopes.push(HashMap::new());
+        for (i, arg) in args.clone().iter().enumerate() {
+            if let ExprKind::Arg(name, ty) = arg.kind.clone() {
+                let arg_ty;
+                match ty {
+                    Type::Text => {
+                        arg_ty = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
+                    }
+                    Type::Number => {
+                        arg_ty = LLVMFloatTypeInContext(self.context);
+                    }
+                    Type::Integer => {
+                        arg_ty = LLVMInt64TypeInContext(self.context);
+                    }
+                    Type::Boolean => {
+                        arg_ty = LLVMInt1TypeInContext(self.context);
+                    }
+                }
+                let alloca = LLVMBuildAlloca(self.builder, arg_ty, name.0.as_ptr() as *const _);
+                LLVMBuildStore(self.builder, LLVMGetParam(function, i as u32), alloca);
+                self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, alloca));
+            } else {
+                return Err(CodeGenError {
+                    kind: ErrorKind::InvalidArgs,
+                    message: "Codegen error: function arg".to_string(),
+                    line: arg.line,
+                }.into())
+            }
+        }
+        let ret_val = self.gen_block(block.clone().into_inner())?;
+        if ret_type != LLVMVoidTypeInContext(self.context) &&
+            LLVMGetTypeKind(LLVMTypeOf(ret_val)) != LLVMGetTypeKind(ret_type) {
+            return Err(CodeGenError {
+                kind: ErrorKind::MismatchedTypes,
+                message: format!("Mismatched return type on function {}", name.0),
+                line: block.exprs.last().unwrap_or(&args[0]).line,
+            }.into())
+        }
+        if ret_type != LLVMVoidTypeInContext(self.context) {
+            LLVMBuildRet(self.builder, ret_val);
+        } else {
+            LLVMBuildRetVoid(self.builder);
+        }
+
+        LLVMRunFunctionPassManager(self.opt_passes, function);
+
+        self.functions.insert(name.0, (function_type, false));
+
+        Ok(ret_val)
     }
 
     pub unsafe fn gen_if(&mut self, e_condition: Expr, block: Block, el: Option<P<Expr>>) -> Result<LLVMValueRef> {
@@ -455,11 +563,8 @@ impl CodeGen {
             argsV.push(arg);
         }
 
-        let mut ret = LLVMBuildCall2(self.builder, function_type.0, function,
+        let ret = LLVMBuildCall2(self.builder, function_type.0, function,
             argsV.as_mut_ptr(), argsV.len() as u32, "\0".as_ptr() as *const _);
-        if LLVMGetTypeKind(LLVMTypeOf(ret)) == LLVMTypeKind::LLVMIntegerTypeKind {
-            ret = LLVMBuildUIToFP(self.builder, ret, LLVMFloatTypeInContext(self.context), "\0".as_ptr() as *const _);
-        }
         Ok(ret)
     }
     

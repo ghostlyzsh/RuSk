@@ -58,7 +58,9 @@ impl Parser {
     pub fn statement(&mut self) -> Result<Expr> {
         match self.tokens.peek()?.token_type {
             TokenType::Ident(s) => {
-                if s == "if" {
+                if s == "function" {
+                    self.function_statement()
+                } else if s == "if" {
                     self.if_statement()
                 } else if s == "set" {
                     self.set_statement()
@@ -84,6 +86,36 @@ impl Parser {
                 self.expression_statement()
             }
         }
+    }
+    pub fn function_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "function" {
+                if let TokenType::Ident(name) = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    self.consume(TokenType::LeftParen, "Expected \"(\" after function name".to_string())?;
+                    let expr = self.types()?;
+                    self.consume(TokenType::RightParen, "Expected \")\" after function parameters".to_string())?;
+
+                    let mut ret_type = None;
+                    if let TokenType::ColonColon = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                        ret_type = Some(self.match_type()?);
+                    }
+                    self.consume(TokenType::Colon, "Expected \":\" after function declaration".to_string())?;
+                    self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
+                    self.consume(TokenType::Indent, "Expected indent after function statement".to_string())?;
+                    let block = self.block()?;
+                    return Ok(Expr {
+                        kind: ExprKind::Function(Ident(name), expr, P(block), ret_type),
+                        line: token.line
+                    });
+                } else {
+                    return Err(self.error(1005, "Expected function name".to_string(), None, 0, token))
+                }
+            }
+        }
+        Err(anyhow!("Parser Error: function"))
     }
     pub fn if_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
@@ -798,6 +830,7 @@ pub enum ExprKind {
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
     If(P<Expr>, P<Block>, Option<P<Expr>>),
+    Function(Ident, Vec<P<Expr>>, P<Block>, Option<Type>),
     Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
