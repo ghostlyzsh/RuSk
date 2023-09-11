@@ -100,7 +100,7 @@ impl CodeGen {
         if errored.0 {
             return Err(anyhow!(errored.1));
         }
-        LLVMPositionBuilderAtEnd(self.builder, bb);
+        //LLVMPositionBuilderAtEnd(self.builder, bb);
         LLVMBuildRet(self.builder, LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0));
 
         LLVMRunFunctionPassManager(self.opt_passes, function);
@@ -128,6 +128,9 @@ impl CodeGen {
             ExprKind::If(cond, block, el) => {
                 self.gen_if(cond.into_inner(), block.into_inner(), el)
             }
+            ExprKind::While(cond, block) => {
+                self.gen_while(cond.into_inner(), block.into_inner())
+            }
             ExprKind::Call(ident, args) => {
                 self.gen_call(ident, args, expr.line)
             }
@@ -140,6 +143,9 @@ impl CodeGen {
             ExprKind::Function(name, args, block, ret) => {
                 self.gen_function(name, args, block, ret)
             }
+            /*ExprKind::Return(expr) => {
+                self.gen_return(expr)
+            }*/
             _ => {
                 Err(CodeGenError {
                     kind: ErrorKind::Invalid,
@@ -253,6 +259,13 @@ impl CodeGen {
 
         Ok(ret_val)
     }
+    /*pub unsafe fn gen_return(&mut self, expr: Option<P<Expr>>) -> Result<LLVMValueRef> {
+        if let Some(expr) = expr {
+            Ok(LLVMBuildRet(self.builder, self.match_expr(expr.into_inner())?))
+        } else {
+            Ok(LLVMBuildRetVoid(self.builder))
+        }
+    }*/
 
     pub unsafe fn gen_if(&mut self, e_condition: Expr, block: Block, el: Option<P<Expr>>) -> Result<LLVMValueRef> {
         let condition = self.match_expr(e_condition.clone())?;
@@ -351,6 +364,35 @@ impl CodeGen {
             Ok(then)
         }
 
+    }
+    pub unsafe fn gen_while(&mut self, cond: Expr, block: Block) -> Result<LLVMValueRef> {
+        let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
+
+        let condition = self.match_expr(cond.clone())?;
+        if condition.is_null() {
+            return Err(CodeGenError {
+                kind: ErrorKind::Null,
+                message: "\"if\" cannot have null condition".to_string(),
+                line: cond.line,
+            }.into())
+        }
+        let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
+        let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
+                                      condition, zero, "\0".as_ptr() as *const _);
+
+        let loopBB = LLVMAppendBasicBlockInContext(self.context, function, "\0".as_ptr() as *const _);
+        let afterBB = LLVMCreateBasicBlockInContext(self.context, "\0".as_ptr() as *const _);
+
+        LLVMBuildBr(self.builder, loopBB);
+        LLVMPositionBuilderAtEnd(self.builder, loopBB);
+
+        self.gen_block(block.clone())?;
+        LLVMBuildCondBr(self.builder, condition, loopBB, afterBB);
+
+        LLVMAppendExistingBasicBlock(function, afterBB);
+        LLVMPositionBuilderAtEnd(self.builder, afterBB);
+
+        Ok(LLVMConstNull(LLVMVoidType()))
     }
 
     pub unsafe fn gen_block(&mut self, block: Block) -> Result<LLVMValueRef> {

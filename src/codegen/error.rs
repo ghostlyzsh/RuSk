@@ -1,4 +1,6 @@
-use std::{fmt, error};
+use std::{fmt, error, sync::Arc};
+
+use llvm_sys::prelude::LLVMValueRef;
 
 #[derive(Debug)]
 pub struct CodeGenError {

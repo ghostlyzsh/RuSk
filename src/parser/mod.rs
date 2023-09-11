@@ -66,6 +66,10 @@ impl Parser {
                     self.set_statement()
                 } else if s == "native" {
                     self.native_function()
+                } else if s == "return" {
+                    self.return_statement()
+                } else if s == "while" {
+                    self.while_statement()
                 } else {
                     self.call_expression()
                 }
@@ -179,6 +183,26 @@ impl Parser {
         }
         Err(anyhow!("Parser Error: if"))
     }
+    pub fn while_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "while" {
+                let condition = self.call_expression()?;
+                let colon = self.tokens.read()
+                    .or(Err(self.error(1001, "Expected \":\" after condition".to_string(), None, 0, token.clone())))?;
+                if let TokenType::Colon = colon.token_type {
+                    self.consume(TokenType::Newline, "Expected new line after statement".to_string())?;
+                    self.consume(TokenType::Indent, "Expected indent after \"while\"".to_string())?;
+                    let expr = self.block()?;
+                    return Ok(Expr {
+                        kind: ExprKind::While(P(condition), P(expr)),
+                        line: token.line,
+                    });
+                }
+            }
+        }
+        Err(anyhow!("Parser Error: while"))
+    }
     pub fn set_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
         if let TokenType::Ident(i) = token.clone().token_type {
@@ -195,6 +219,19 @@ impl Parser {
             }
         }
         Err(anyhow!("Parser Error: set"))
+    }
+    pub fn return_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "return" {
+                if let TokenType::Newline = self.tokens.peek()?.token_type {
+                    return Ok(Expr { kind: ExprKind::Return(None), line: token.line })
+                }
+                let expression = self.statement()?;
+                return Ok(Expr { kind: ExprKind::Return(Some(P(expression))), line: token.line })
+            }
+        }
+        Err(anyhow!("Parser Error: return"))
     }
     pub fn native_function(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
@@ -829,8 +866,10 @@ pub enum ExprKind {
     Set(Variable, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
+    While(P<Expr>, P<Block>),
     If(P<Expr>, P<Block>, Option<P<Expr>>),
     Function(Ident, Vec<P<Expr>>, P<Block>, Option<Type>),
+    Return(Option<P<Expr>>),
     Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
