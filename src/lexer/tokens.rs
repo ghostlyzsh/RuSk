@@ -59,6 +59,7 @@ impl Tokens {
         Self { pos: 0, inner: Vec::new() }
     }
     pub fn get_position(&self) -> u64 { self.pos }
+    pub fn back_1(&mut self) -> u64 { self.pos -= 1; self.pos }
     
     pub fn into_inner(self) -> Vec<Token> {
         self.inner

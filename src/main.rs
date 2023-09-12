@@ -3,29 +3,32 @@
 use std::ffi::CString;
 
 use anyhow::Result;
-use argh::FromArgs;
 use lexer::Lexer;
 use llvm_sys::target_machine::{LLVMCodeGenFileType, LLVMTargetMachineEmitToFile};
 
 use crate::{parser::Parser, codegen::CodeGen};
+use clap::Parser as cParser;
 
 pub mod lexer;
 pub mod parser;
 pub mod codegen;
 
-#[derive(FromArgs)]
+#[derive(cParser)]
 /// A compiler for skript
 struct Options {
-    #[argh(positional)]
-    file: String
+    input: String,
+
+    /// optimize code
+    #[arg(short = 'O')]
+    optimize: bool,
 }
 
 fn main() -> Result<()> {
-    let options: Options = argh::from_env();
+    let options: Options = Options::parse();
 
-    let contents = std::fs::read_to_string(options.file.clone())?;
+    let contents = std::fs::read_to_string(options.input.clone())?;
 
-    let mut lexer = Lexer::new(options.file.clone(), contents.clone());
+    let mut lexer = Lexer::new(options.input.clone(), contents.clone());
     match lexer.process() {
         Ok(_) => {}
         Err(e) => {
@@ -33,7 +36,7 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    let mut parser = Parser::new(lexer.tokens, options.file, contents);
+    let mut parser = Parser::new(lexer.tokens, options.input, contents);
     match parser.parse() {
         Ok(_) => {}
         Err(e) => {
@@ -44,7 +47,7 @@ fn main() -> Result<()> {
 
     unsafe {
         let output = "output.o";
-        let mut codegen = CodeGen::new(parser.exprs);
+        let mut codegen = CodeGen::new(parser.exprs, options.optimize);
         match codegen.gen_code() {
             Ok(_) => {}
             Err(e) => {

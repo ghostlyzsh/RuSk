@@ -15,10 +15,11 @@ pub struct CodeGen {
     scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Value, Type, Alloc)
     functions: HashMap<String, (LLVMTypeRef, bool)>,
     pub machine: LLVMTargetMachineRef,
+    optimize: bool,
 }
 
 impl CodeGen {
-    pub unsafe fn new(exprs: Vec<P<Expr>>) -> Self {
+    pub unsafe fn new(exprs: Vec<P<Expr>>, optimize: bool) -> Self {
         let target_triple = LLVMGetDefaultTargetTriple();
         LLVM_InitializeAllTargetInfos();
         LLVM_InitializeAllTargets();
@@ -63,6 +64,7 @@ impl CodeGen {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             machine: target_machine,
+            optimize,
         }
     }
 
@@ -103,7 +105,9 @@ impl CodeGen {
         //LLVMPositionBuilderAtEnd(self.builder, bb);
         LLVMBuildRet(self.builder, LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0));
 
-        LLVMRunFunctionPassManager(self.opt_passes, function);
+        if self.optimize {
+            LLVMRunFunctionPassManager(self.opt_passes, function);
+        }
 
         Ok(function)
     }
@@ -138,6 +142,7 @@ impl CodeGen {
                 self.gen_native(name, args, var, ret)
             }
             ExprKind::Block(block) => {
+                self.scopes.push(HashMap::new());
                 self.gen_block(block.into_inner())
             }
             ExprKind::Function(name, args, block, ret) => {
@@ -227,7 +232,7 @@ impl CodeGen {
                         arg_ty = LLVMInt1TypeInContext(self.context);
                     }
                 }
-                let alloca = LLVMBuildAlloca(self.builder, arg_ty, name.0.as_ptr() as *const _);
+                let alloca = LLVMBuildAlloca(self.builder, arg_ty, (name.0.clone() + "\0").as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMGetParam(function, i as u32), alloca);
                 self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, alloca));
             } else {
@@ -253,7 +258,9 @@ impl CodeGen {
             LLVMBuildRetVoid(self.builder);
         }
 
-        LLVMRunFunctionPassManager(self.opt_passes, function);
+        if self.optimize {
+            LLVMRunFunctionPassManager(self.opt_passes, function);
+        }
 
         self.functions.insert(name.0, (function_type, false));
 
@@ -280,7 +287,7 @@ impl CodeGen {
         if let Some(expr) = el {
             let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
             let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
-                                          condition, zero, "ifcond".as_ptr() as *const _);
+                                          condition, zero, "\0".as_ptr() as *const _);
 
             let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
 
@@ -295,6 +302,7 @@ impl CodeGen {
             LLVMPositionBuilderAtEnd(self.builder, thenBB);
 
             // then
+            self.scopes.push(HashMap::new());
             let mut then = self.gen_block(block.clone())?;
             if then.is_null() {
                 return Err(CodeGenError {
@@ -328,7 +336,7 @@ impl CodeGen {
         } else {
             let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
             let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
-                                          condition, zero, "ifcond".as_ptr() as *const _);
+                                          condition, zero, "ifcond\0".as_ptr() as *const _);
             
             let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
             let thenBB = LLVMAppendBasicBlockInContext(self.context, function,
@@ -340,6 +348,7 @@ impl CodeGen {
             LLVMBuildCondBr(self.builder, condition, thenBB, elseBB);
 
             LLVMPositionBuilderAtEnd(self.builder, thenBB);
+            self.scopes.push(HashMap::new());
             let mut then = self.gen_block(block.clone())?;
             if then.is_null() {
                 return Err(CodeGenError {
@@ -368,26 +377,32 @@ impl CodeGen {
     pub unsafe fn gen_while(&mut self, cond: Expr, block: Block) -> Result<LLVMValueRef> {
         let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
 
-        let condition = self.match_expr(cond.clone())?;
-        if condition.is_null() {
+        let v_condition = self.match_expr(cond.clone())?;
+        if v_condition.is_null() {
             return Err(CodeGenError {
                 kind: ErrorKind::Null,
-                message: "\"if\" cannot have null condition".to_string(),
+                message: "\"while\" cannot have null condition".to_string(),
                 line: cond.line,
             }.into())
         }
-        let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
-        let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
-                                      condition, zero, "\0".as_ptr() as *const _);
 
         let loopBB = LLVMAppendBasicBlockInContext(self.context, function, "\0".as_ptr() as *const _);
         let afterBB = LLVMCreateBasicBlockInContext(self.context, "\0".as_ptr() as *const _);
 
-        LLVMBuildBr(self.builder, loopBB);
+        LLVMBuildCondBr(self.builder, v_condition, loopBB, afterBB);
         LLVMPositionBuilderAtEnd(self.builder, loopBB);
 
+        self.scopes.push(HashMap::new());
         self.gen_block(block.clone())?;
-        LLVMBuildCondBr(self.builder, condition, loopBB, afterBB);
+        let v_condition = self.match_expr(cond.clone())?;
+        if v_condition.is_null() {
+            return Err(CodeGenError {
+                kind: ErrorKind::Null,
+                message: "\"while\" cannot have null condition".to_string(),
+                line: cond.line,
+            }.into())
+        }
+        LLVMBuildCondBr(self.builder, v_condition, loopBB, afterBB);
 
         LLVMAppendExistingBasicBlock(function, afterBB);
         LLVMPositionBuilderAtEnd(self.builder, afterBB);
@@ -396,7 +411,6 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_block(&mut self, block: Block) -> Result<LLVMValueRef> {
-        self.scopes.push(HashMap::new());
         let mut errored = (false, String::new());
         let mut last = LLVMConstNull(LLVMVoidType());
         for p_expr in block.exprs.clone() {
@@ -412,20 +426,21 @@ impl CodeGen {
                 }
             };
         }
+        self.scopes.pop();
         if errored.0 {
             return Err(anyhow!(errored.1));
         }
-        self.scopes.pop();
 
         Ok(last)
     }
 
     pub unsafe fn gen_set(&mut self, variable: Variable, eval: Expr) -> Result<LLVMValueRef> {
         let scopes = self.scopes.clone();
-        let scope = scopes.last().unwrap();
+        let scope = scopes.iter().fold(HashMap::new(), |sum, v| sum.into_iter().chain(v).collect());
         let value = self.match_expr(eval.clone())?;
 
         if scope.get(&variable.name.0).is_some() {
+            println!("====================== here ================");
             let alloc = scope.get(&variable.name.0).unwrap();
             LLVMBuildStore(self.builder, value, alloc.1);
             return Ok(value);
@@ -621,27 +636,172 @@ impl CodeGen {
             }.into());
         }
 
-        match binop {
-            BinOp::Add => {
-                Ok(LLVMBuildFAdd(self.builder, lhs, rhs, b"addtmp\0".as_ptr() as *const _))
+        if let LLVMTypeKind::LLVMIntegerTypeKind = LLVMGetTypeKind(LLVMTypeOf(lhs)) {
+            if let LLVMTypeKind::LLVMIntegerTypeKind = LLVMGetTypeKind(LLVMTypeOf(rhs)) {
+                if LLVMGetIntTypeWidth(LLVMTypeOf(lhs)) == 64 {
+                    if LLVMGetIntTypeWidth(LLVMTypeOf(rhs)) == 64 {
+                        match binop {
+                            BinOp::Add => {
+                                return Ok(LLVMBuildAdd(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Sub => {
+                                return Ok(LLVMBuildSub(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Mul => {
+                                return Ok(LLVMBuildMul(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Shl => {
+                                return Ok(LLVMBuildShl(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Shr => {
+                                return Ok(LLVMBuildAShr(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::BitOr => {
+                                return Ok(LLVMBuildOr(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::BitAnd => {
+                                return Ok(LLVMBuildAnd(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::BitXor => {
+                                return Ok(LLVMBuildXor(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Eq => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntEQ, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Ne => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntNE, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Gr => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntSGT, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Ge => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntSGE, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Ls => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntSLT, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Le => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntSLE, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            _ => {
+                                return Err(CodeGenError {
+                                    kind: ErrorKind::Invalid,
+                                    line: e_lhs.line,
+                                    message: "Case not handled in binary operation".to_string(),
+                                }.into())
+                            }
+                        }
+                    }
+                } else if LLVMGetIntTypeWidth(LLVMTypeOf(lhs)) == 1 {
+                    if LLVMGetIntTypeWidth(LLVMTypeOf(rhs)) == 1 {
+                        match binop {
+                            BinOp::Or => {
+                                return Ok(LLVMBuildOr(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::And => {
+                                return Ok(LLVMBuildAnd(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Eq => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntEQ, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            BinOp::Ne => {
+                                return Ok(LLVMBuildICmp(self.builder, llvm_sys::LLVMIntPredicate::LLVMIntNE, lhs, rhs, b"\0".as_ptr() as *const _))
+                            }
+                            _ => {
+                                return Err(CodeGenError {
+                                    kind: ErrorKind::Invalid,
+                                    line: e_lhs.line,
+                                    message: "Case not handled in binary operation".to_string(),
+                                }.into())
+                            }
+                        }
+                    }
+                    return Err(CodeGenError {
+                        kind: ErrorKind::Invalid,
+                        line: e_lhs.line,
+                        message: "Mismatching type".to_string(),
+                    }.into())
+                } else {
+                    return Err(CodeGenError {
+                        kind: ErrorKind::Invalid,
+                        line: e_lhs.line,
+                        message: "Unexpected integer width".to_string(),
+                    }.into())
+                }
             }
-            BinOp::Sub => {
-                Ok(LLVMBuildFSub(self.builder, lhs, rhs, b"subtmp\0".as_ptr() as *const _))
+            return Err(CodeGenError {
+                kind: ErrorKind::MismatchedTypes,
+                line: e_lhs.line,
+                message: "Mismatched type".to_string(),
+            }.into())
+        } else if LLVMGetTypeKind(LLVMTypeOf(lhs)) == LLVMTypeKind::LLVMFloatTypeKind {
+            if LLVMGetTypeKind(LLVMTypeOf(rhs)) == LLVMTypeKind::LLVMFloatTypeKind {
+                match binop {
+                    BinOp::Add => {
+                        return Ok(LLVMBuildFAdd(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Sub => {
+                        return Ok(LLVMBuildFSub(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Mul => {
+                        return Ok(LLVMBuildFMul(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Div => {
+                        return Ok(LLVMBuildFDiv(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Shl => {
+                        return Ok(LLVMBuildShl(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Shr => {
+                        return Ok(LLVMBuildAShr(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::BitOr => {
+                        return Ok(LLVMBuildOr(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::BitAnd => {
+                        return Ok(LLVMBuildAnd(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::BitXor => {
+                        return Ok(LLVMBuildXor(self.builder, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Eq => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealOEQ, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Ne => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealONE, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Gr => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealOGT, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Ge => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealOGE, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Ls => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealOLT, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    BinOp::Le => {
+                        return Ok(LLVMBuildFCmp(self.builder, llvm_sys::LLVMRealPredicate::LLVMRealOLE, lhs, rhs, b"\0".as_ptr() as *const _))
+                    }
+                    _ => {
+                        return Err(CodeGenError {
+                            kind: ErrorKind::Invalid,
+                            line: e_lhs.line,
+                            message: "Case not handled in binary operation".to_string(),
+                        }.into())
+                    }
+                }
             }
-            BinOp::Mul => {
-                Ok(LLVMBuildFMul(self.builder, lhs, rhs, b"multmp\0".as_ptr() as *const _))
-            }
-            BinOp::Div => {
-                Ok(LLVMBuildFDiv(self.builder, lhs, rhs, b"divtmp\0".as_ptr() as *const _))
-            }
-            _ => {
-                Err(CodeGenError {
-                    kind: ErrorKind::Invalid,
-                    line: e_lhs.line,
-                    message: "Case not handled in binary operation".to_string(),
-                }.into())
-            }
+            return Err(CodeGenError {
+                kind: ErrorKind::MismatchedTypes,
+                line: e_lhs.line,
+                message: "Mismatched type".to_string(),
+            }.into())
         }
+        Err(CodeGenError {
+            kind: ErrorKind::MismatchedTypes,
+            line: e_lhs.line,
+            message: "Type not evaluated".to_string(),
+        }.into())
     }
 
     pub unsafe fn gen_lit(&mut self, lit: Literal) -> Result<LLVMValueRef> {

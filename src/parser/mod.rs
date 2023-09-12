@@ -198,6 +198,8 @@ impl Parser {
                         kind: ExprKind::While(P(condition), P(expr)),
                         line: token.line,
                     });
+                } else {
+                    return Err(self.error(1001, format!("Expected \":\" after condition, found {}", colon.lexeme), None, 0, token.clone()))
                 }
             }
         }
@@ -399,10 +401,8 @@ impl Parser {
                 self.consume(TokenType::RightParen, "Expected closing parenthesis in function call".to_string())?;
                 Ok(Expr { kind: ExprKind::Call(Ident(string), expr), line: token.line })
             } else {
-                Ok(Expr {
-                    kind: ExprKind::Ident(Ident(string)),
-                    line: token.line,
-                })
+                self.tokens.back_1();
+                self.expression()
             }
         } else {
             self.expression()
@@ -424,24 +424,13 @@ impl Parser {
         let expr = self.expression()?;
         let token = self.tokens.read()?;
         if let TokenType::Newline = token.token_type {} else {
-            return Err(self.error(1002, "Expected new line after statement".to_string(), None, 0, token));
+            return Err(self.error(1002, format!("Expected new line after statement, found {}", token.lexeme), None, 0, token));
         }
         Ok(expr)
     }
     pub fn expression(&mut self) -> Result<Expr> {
-        let expr = self.variable()?;
+        let expr = self.logical_or()?;
         Ok(expr)
-    }
-    pub fn variable(&mut self) -> Result<Expr> {
-        if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
-            let token = self.tokens.read()?;
-            Ok(Expr {
-                kind: ExprKind::Var(self.handle_variable()?),
-                line: token.line
-            })
-        } else {
-            self.logical_or()
-        }
     }
     pub fn handle_variable(&mut self) -> Result<Variable> {
         let visibility = match self.tokens.peek()?.token_type {
@@ -823,15 +812,8 @@ impl Parser {
             filename: self.filename.clone(),
             help,
         }.into()
-        /*anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
-              \x1b[1;94m{3} |\x1b[0m  {}\n\
-              \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
-              String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
-              line_space, column_space, help.unwrap_or("".to_string()),
-              ))*/
     }
     pub fn error_tok(&mut self, code: u32, message: String, help: Option<String>, token: TokenError) -> Error {
-        //let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len()-1);
         let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
         let line_end = token.index-1;
         ParserError {
@@ -844,12 +826,6 @@ impl Parser {
             filename: self.filename.clone(),
             help,
         }.into()
-        /*anyhow!(format!("\x1b[1;91merror[E{:0>4}]\x1b[0m: {} in \x1b[1;94m{}\x1b[0m at line {}:\n\
-              \x1b[1;94m{3} |\x1b[0m  {}\n\
-              \x1b[1;94m{} |\x1b[0m {}\x1b[1;91m^ {}\x1b[0m\n", code, message, self.filename, token.line+1,
-              String::from_utf8(self.file.clone()[line_start as usize..line_end as usize].into()).unwrap(),
-              line_space, column_space, help.unwrap_or("".to_string()),
-              ))*/
     }
 }
 
