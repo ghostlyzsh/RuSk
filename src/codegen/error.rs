@@ -1,28 +1,13 @@
-use std::{fmt, error, sync::Arc};
-
-use llvm_sys::prelude::LLVMValueRef;
+use std::{fmt, error};
 
 #[derive(Debug)]
 pub struct CodeGenError {
     pub kind: ErrorKind,
     pub message: String,
     pub line: u32,
-    /*pub column: u64,*/
-    /*pub line_str: String,*/
-    /*pub offset: i32,*/
-    /*pub filename: String,*/
-    /*pub help: Option<String>,*/
 }
 impl CodeGenError {
     pub fn into_string(&self) -> String {
-        //let line_space: String = vec![' '; self.line.to_string().len() as usize].into_iter().collect();
-
-        /*let column_space: String;
-        if self.offset.signum() == -1 {
-            column_space = vec![' '; self.column as usize - (-self.offset) as usize].into_iter().collect();
-        } else {
-            column_space = vec![' '; self.column as usize + self.offset as usize].into_iter().collect();
-        }*/
         let code = match self.kind {
             ErrorKind::MismatchedTypes => 3001,
             ErrorKind::Null => 3002,

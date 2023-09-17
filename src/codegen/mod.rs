@@ -467,6 +467,8 @@ impl CodeGen {
         let scope = scopes.iter().fold(HashMap::new(), |sum, v| sum.into_iter().chain(v).collect());
         let value: LLVMValueRef;
         if let ExprKind::Array(array) = eval.clone().kind {
+            // set {variable::1} to [1, 2, 3] will NOT work right now.
+            // TODO fix that
             if variable.mutable {
                 let mut v_array = self.process_array(array)?;
                 let arr_type;
@@ -481,7 +483,7 @@ impl CodeGen {
                     LLVMBuildStore(self.builder, value, alloc.1);
                     return Ok(value);
                 }
-                let alloc = LLVMBuildAlloca(self.builder, LLVMPointerType(arr_type, 0), "\0".as_ptr() as *const _);
+                let alloc = LLVMBuildAlloca(self.builder, LLVMPointerType(arr_type, 0), (variable.name.0.clone() + "\0").as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMConstArray(arr_type, v_array.as_mut_ptr(), v_array.len() as u32), alloc);
                 self.scopes.last_mut().unwrap().insert(variable.name.0, (LLVMArrayType(arr_type, v_array.len() as u32), alloc));
                 return Ok(alloc);
@@ -494,8 +496,23 @@ impl CodeGen {
 
         if scope.get(&variable.name.0).is_some() {
             let alloc = scope.get(&variable.name.0).unwrap();
+            if let Some(index) = variable.index {
+                let index = self.match_expr(index.into_inner())?;
+                if LLVMTypeKind::LLVMIntegerTypeKind != LLVMGetTypeKind(LLVMTypeOf(index)) {
+                }
+                let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), index];
+                let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.1, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                return Ok(LLVMBuildStore(self.builder, value, ptr))
+            }
             LLVMBuildStore(self.builder, value, alloc.1);
             return Ok(value);
+        }
+        if let Some(_) = variable.index {
+            return Err(CodeGenError {
+                kind: ErrorKind::Null,
+                message: "Cannot set index of uninitialized list".to_string(),
+                line: eval.line,
+            }.into())
         }
         if value.is_null() {
             return Err(CodeGenError {
@@ -507,7 +524,7 @@ impl CodeGen {
         let value_type = LLVMTypeOf(value);
 
         let name = variable.name.0;
-        let alloc = LLVMBuildAlloca(self.builder, value_type, "\0".as_ptr() as *const _);
+        let alloc = LLVMBuildAlloca(self.builder, value_type, (name.clone() + "\0").as_ptr() as *const _);
         LLVMBuildStore(self.builder, value, alloc);
         self.scopes.last_mut().unwrap().insert(name, (LLVMTypeOf(value), alloc));
 
