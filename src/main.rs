@@ -44,7 +44,6 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    println!("{:#?}", parser.exprs);
 
     unsafe {
         let output = "output.o";

@@ -483,6 +483,7 @@ impl CodeGen {
                 }
                 let alloc = LLVMBuildAlloca(self.builder, LLVMPointerType(arr_type, 0), "\0".as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMConstArray(arr_type, v_array.as_mut_ptr(), v_array.len() as u32), alloc);
+                self.scopes.last_mut().unwrap().insert(variable.name.0, (LLVMArrayType(arr_type, v_array.len() as u32), alloc));
                 return Ok(alloc);
             } else {
                 value = self.match_expr(eval.clone())?;
@@ -622,10 +623,10 @@ impl CodeGen {
             if LLVMTypeKind::LLVMIntegerTypeKind != LLVMGetTypeKind(LLVMTypeOf(index)) {
             }
             let element_type = LLVMGetElementType(var.0);
-            let mut indices = LLVMConstArray(LLVMInt32Type(),
-                                             [LLVMConstInt(LLVMInt64Type(), 0, 0), index].as_mut_ptr(), 2);
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), var.1, &mut indices, 2, "\0".as_ptr() as *const _);
-            Ok(LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _))
+            //let mut indices = [index, LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0)];
+            let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), index];
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, var.1, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            Ok(LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _))
         } else {
             Ok(LLVMBuildLoad2(self.builder, var.0, var.1, "\0".as_ptr() as *const _))
         }

@@ -745,6 +745,15 @@ impl Parser {
             return Ok(array);
         }
 
+        if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
+            let token = self.tokens.read()?;
+            let variable = self.handle_variable()?;
+            return Ok(Expr {
+                kind: ExprKind::Var(variable),
+                line: token.line,
+            });
+        }
+
         if let TokenType::LeftParen = self.tokens.peek()?.token_type {
             let token = self.tokens.read()?;
             let expr = self.expression()?;
