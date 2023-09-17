@@ -12,8 +12,8 @@ pub struct CodeGen {
     pub module: LLVMModuleRef,
     builder: LLVMBuilderRef,
     opt_passes: LLVMPassManagerRef,
-    scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (Value, Type, Alloc)
-    functions: HashMap<String, (LLVMTypeRef, bool)>,
+    scopes: Vec<HashMap<String, (LLVMTypeRef, LLVMValueRef)>>, // Name, (LLVMType, Alloc)
+    functions: HashMap<String, (LLVMTypeRef, bool)>, // Name, (function_type, has_var_args)
     pub machine: LLVMTargetMachineRef,
     optimize: bool,
 }
@@ -123,6 +123,13 @@ impl CodeGen {
             ExprKind::Lit(lit) => {
                 self.gen_lit(lit)
             }
+            ExprKind::Array(array) => {
+                let mut array = self.process_array(array)?;
+                if array.len() == 0 {
+                    return Ok(LLVMConstArray(LLVMVoidType(), array.as_mut_ptr(), 0))
+                }
+                Ok(LLVMConstArray(LLVMTypeOf(array[0]), array.as_mut_ptr(), array.len() as u32))
+            }
             ExprKind::Var(name) => {
                 self.gen_variable(name, expr.line)
             }
@@ -178,6 +185,13 @@ impl CodeGen {
                     Type::Boolean => {
                         f_args.push(LLVMInt1TypeInContext(self.context));
                     }
+                    _ => { // add array functionality later
+                        return Err(CodeGenError {
+                            kind: ErrorKind::InvalidArgs,
+                            message: "Codegen error: function arg".to_string(),
+                            line: arg.line,
+                        }.into())
+                    }
                 };
             } else {
                 return Err(CodeGenError {
@@ -201,6 +215,13 @@ impl CodeGen {
                 }
                 Type::Boolean => {
                     ret_type = LLVMInt1TypeInContext(self.context);
+                }
+                _ => { // add array functionality later
+                    return Err(CodeGenError {
+                        kind: ErrorKind::InvalidArgs,
+                        message: "Codegen error: function arg".to_string(),
+                        line: args[0].line,
+                    }.into())
                 }
             }
         } else {
@@ -230,6 +251,13 @@ impl CodeGen {
                     }
                     Type::Boolean => {
                         arg_ty = LLVMInt1TypeInContext(self.context);
+                    }
+                    _ => { // add array functionality later
+                        return Err(CodeGenError {
+                            kind: ErrorKind::InvalidArgs,
+                            message: "Codegen error: function arg".to_string(),
+                            line: args[0].line,
+                        }.into())
                     }
                 }
                 let alloca = LLVMBuildAlloca(self.builder, arg_ty, (name.0.clone() + "\0").as_ptr() as *const _);
@@ -437,10 +465,33 @@ impl CodeGen {
     pub unsafe fn gen_set(&mut self, variable: Variable, eval: Expr) -> Result<LLVMValueRef> {
         let scopes = self.scopes.clone();
         let scope = scopes.iter().fold(HashMap::new(), |sum, v| sum.into_iter().chain(v).collect());
-        let value = self.match_expr(eval.clone())?;
+        let value: LLVMValueRef;
+        if let ExprKind::Array(array) = eval.clone().kind {
+            if variable.mutable {
+                let mut v_array = self.process_array(array)?;
+                let arr_type;
+                if v_array.len() == 0 {
+                    arr_type = LLVMVoidType();
+                } else {
+                    arr_type = LLVMTypeOf(v_array[0]);
+                }
+                if scope.get(&variable.name.0).is_some() {
+                    let alloc = scope.get(&variable.name.0).unwrap();
+                    let value = LLVMConstArray(arr_type, v_array.as_mut_ptr(), v_array.len() as u32);
+                    LLVMBuildStore(self.builder, value, alloc.1);
+                    return Ok(value);
+                }
+                let alloc = LLVMBuildAlloca(self.builder, LLVMPointerType(arr_type, 0), "\0".as_ptr() as *const _);
+                LLVMBuildStore(self.builder, LLVMConstArray(arr_type, v_array.as_mut_ptr(), v_array.len() as u32), alloc);
+                return Ok(alloc);
+            } else {
+                value = self.match_expr(eval.clone())?;
+            }
+        } else {
+            value = self.match_expr(eval.clone())?;
+        }
 
         if scope.get(&variable.name.0).is_some() {
-            println!("====================== here ================");
             let alloc = scope.get(&variable.name.0).unwrap();
             LLVMBuildStore(self.builder, value, alloc.1);
             return Ok(value);
@@ -464,7 +515,7 @@ impl CodeGen {
 
     pub unsafe fn gen_native(&mut self, name: Ident, args: Vec<P<Expr>>, var: bool, ret: Option<P<Expr>>) -> Result<LLVMValueRef> {
         let mut args_type = Vec::new();
-        for arg in args {
+        for arg in args.clone() {
             let arg = arg.into_inner();
             if let ExprKind::Arg(ident, t) = arg.kind {
                 let tt;
@@ -480,6 +531,13 @@ impl CodeGen {
                     }
                     Type::Boolean => {
                         tt = LLVMInt1Type();
+                    }
+                    _ => { // add array functionality later
+                        return Err(CodeGenError {
+                            kind: ErrorKind::InvalidArgs,
+                            message: "Codegen error: function arg".to_string(),
+                            line: args[0].line,
+                        }.into())
                     }
                 }
                 args_type.push((ident.0, tt));
@@ -508,6 +566,13 @@ impl CodeGen {
                     Type::Boolean => {
                         ret_type = LLVMInt1Type();
                     }
+                    _ => { // add array functionality later
+                        return Err(CodeGenError {
+                            kind: ErrorKind::InvalidArgs,
+                            message: "Codegen error: function arg".to_string(),
+                            line: args[0].line,
+                        }.into())
+                    }
                 }
             } else {
                 return Err(CodeGenError {
@@ -527,7 +592,8 @@ impl CodeGen {
 
     pub unsafe fn gen_variable(&mut self, variable: Variable, line: u32) -> Result<LLVMValueRef> {
         let mut var = None;
-        self.scopes.iter().for_each(|scope| {
+        let scopes = self.scopes.clone();
+        scopes.iter().for_each(|scope| {
             match scope.get(&variable.name.0) {
                 Some(v) => {
                     var = Some(v)
@@ -551,7 +617,18 @@ impl CodeGen {
             }.into())
         }
 
-        Ok(LLVMBuildLoad2(self.builder, var.0, var.1, "\0".as_ptr() as *const _))
+        if let Some(index) = variable.index {
+            let index = self.match_expr(index.into_inner())?;
+            if LLVMTypeKind::LLVMIntegerTypeKind != LLVMGetTypeKind(LLVMTypeOf(index)) {
+            }
+            let element_type = LLVMGetElementType(var.0);
+            let mut indices = LLVMConstArray(LLVMInt32Type(),
+                                             [LLVMConstInt(LLVMInt64Type(), 0, 0), index].as_mut_ptr(), 2);
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), var.1, &mut indices, 2, "\0".as_ptr() as *const _);
+            Ok(LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _))
+        } else {
+            Ok(LLVMBuildLoad2(self.builder, var.0, var.1, "\0".as_ptr() as *const _))
+        }
     }
 
     pub unsafe fn gen_call(&mut self, ident: Ident, args: Vec<P<Expr>>, line: u32) -> Result<LLVMValueRef> {
@@ -603,8 +680,7 @@ impl CodeGen {
             if !function_type.1 {
                 if LLVMGetTypeKind(LLVMTypeOf(arg)) == LLVMTypeKind::LLVMArrayTypeKind {
                     let element_type = LLVMGetElementType(LLVMTypeOf(arg));
-                    let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
-                    println!("{}", num_indices);
+                    //let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
                     let mut int = LLVMConstInt(LLVMInt32Type(), 0, 0);
                     arg = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg, &mut int, 0, "\0".as_ptr() as *const _);
                 }
@@ -802,6 +878,16 @@ impl CodeGen {
             line: e_lhs.line,
             message: "Type not evaluated".to_string(),
         }.into())
+    }
+
+    pub unsafe fn process_array(&mut self, array: Vec<P<Expr>>) -> Result<Vec<LLVMValueRef>> {
+        let mut array_values = Vec::new();
+        for element in array {
+            let element = element.into_inner();
+            array_values.push(self.match_expr(element)?);
+        }
+
+        Ok(array_values)
     }
 
     pub unsafe fn gen_lit(&mut self, lit: Literal) -> Result<LLVMValueRef> {

@@ -7,7 +7,7 @@ use anyhow::Result;
 pub enum TokenType {
     Bang, Colon, LeftParen, RightParen, Percent, Plus, Minus, Star, Newline,
     Equals, Comma, Slash, LeftAngle, RightAngle, BitAnd, BitOr, BitXor,
-    LeftBrace, RightBrace, Tilde,
+    LeftBrace, RightBrace, Tilde, LeftSquare, RightSquare,
 
     Exp, ColonColon, BangEqual, LessEqual, GreaterEqual, Shl, Shr, And, Or,
     Ellipsis,

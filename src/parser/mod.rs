@@ -87,7 +87,7 @@ impl Parser {
                 self.statement()
             }
             _ => {
-                self.expression_statement()
+                self.call_expression()
             }
         }
     }
@@ -433,6 +433,16 @@ impl Parser {
         Ok(expr)
     }
     pub fn handle_variable(&mut self) -> Result<Variable> {
+        let mutable = if let TokenType::Ident(s) = self.tokens.peek()?.token_type {
+            if s == "mut" {
+                self.tokens.read()?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let visibility = match self.tokens.peek()?.token_type {
             TokenType::Star => {
                 self.tokens.read()?;
@@ -450,32 +460,21 @@ impl Parser {
         if let TokenType::Ident(name) = ident.token_type {
             if let TokenType::ColonColon = self.tokens.peek()?.token_type {
                 self.tokens.read()?;
-                if let TokenType::Star = self.tokens.peek()?.token_type {
-                    self.tokens.read()?;
-                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                    Ok(Variable {
-                        name: Ident(name),
-                        list_mode: Some(VariableListMode::All),
-                        visibility,
-                        mutable: false,
-                    })
-                } else {
-                    let expr = self.expression()?;
-                    self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                    Ok(Variable {
-                        name: Ident(name),
-                        list_mode: Some(VariableListMode::Index(P(expr))),
-                        visibility,
-                        mutable: false,
-                    })
-                }
+                let expr = self.expression()?;
+                self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                Ok(Variable {
+                    name: Ident(name),
+                    index: Some(P(expr)),
+                    visibility,
+                    mutable,
+                })
             } else {
                 self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
                 Ok(Variable {
                     name: Ident(name),
-                    list_mode: None,
+                    index: None,
                     visibility,
-                    mutable: false,
+                    mutable,
                 })
             }
         } else {
@@ -740,13 +739,10 @@ impl Parser {
             });
         }
 
-        if let TokenType::LeftBrace = self.tokens.peek()?.token_type {
-            let token = self.tokens.read()?;
-            let variable = self.handle_variable()?;
-            return Ok(Expr {
-                kind: ExprKind::Var(variable),
-                line: token.line,
-            });
+        if let TokenType::LeftSquare = self.tokens.peek()?.token_type {
+            self.tokens.read()?;
+            let array = self.array()?;
+            return Ok(array);
         }
 
         if let TokenType::LeftParen = self.tokens.peek()?.token_type {
@@ -768,6 +764,23 @@ impl Parser {
 
         let token = self.tokens.read()?;
         Err(self.error(1002, "Unrecognized syntax".to_string(), None, 0, token))
+    }
+
+    pub fn array(&mut self) -> Result<Expr> {
+        let mut list = Vec::new();
+        loop {
+            list.push(P(self.statement()?));
+            if let TokenType::Comma = self.tokens.peek()?.token_type {
+                self.tokens.read()?;
+            } else {
+                break;
+            }
+        }
+        let line = self.consume(TokenType::RightSquare, "Expected \"]\" after list".to_string())?.line;
+        Ok(Expr {
+            kind: ExprKind::Array(list),
+            line,
+        })
     }
 
     pub fn consume(&mut self, token_type: TokenType, message: String) -> Result<Token> {
@@ -850,6 +863,7 @@ pub enum ExprKind {
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
     Var(Variable),
+    Array(Vec<P<Expr>>),
     Lit(Literal),
     Ident(Ident),
     Arg(Ident, Type),
@@ -916,21 +930,16 @@ pub enum Type {
     Number,
     Integer,
     Boolean,
+    Array(P<Type>),
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Variable {
     pub name: Ident,
-    pub list_mode: Option<VariableListMode>,
+    pub index: Option<P<Expr>>,
     pub visibility: VisibilityMode,
     pub mutable: bool,
-}
-
-#[derive(Clone, Debug)]
-pub enum VariableListMode {
-    All,
-    Index(P<Expr>)
 }
 
 #[derive(Clone, Debug)]

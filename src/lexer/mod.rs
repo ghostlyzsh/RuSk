@@ -93,6 +93,8 @@ impl Lexer {
                 },
                 '(' => self.tokens.write_one(self.token_from_type(TokenType::LeftParen)),
                 ')' => self.tokens.write_one(self.token_from_type(TokenType::RightParen)),
+                '[' => self.tokens.write_one(self.token_from_type(TokenType::LeftSquare)),
+                ']' => self.tokens.write_one(self.token_from_type(TokenType::RightSquare)),
                 '=' => self.tokens.write_one(self.token_from_type(TokenType::Equals)),
                 ',' => self.tokens.write_one(self.token_from_type(TokenType::Comma)),
                 '.' => {
