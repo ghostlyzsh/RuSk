@@ -433,16 +433,6 @@ impl Parser {
         Ok(expr)
     }
     pub fn handle_variable(&mut self) -> Result<Variable> {
-        let mutable = if let TokenType::Ident(s) = self.tokens.peek()?.token_type {
-            if s == "mut" {
-                self.tokens.read()?;
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
         let visibility = match self.tokens.peek()?.token_type {
             TokenType::Star => {
                 self.tokens.read()?;
@@ -466,7 +456,6 @@ impl Parser {
                     name: Ident(name),
                     index: Some(P(expr)),
                     visibility,
-                    mutable,
                 })
             } else {
                 self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
@@ -474,7 +463,6 @@ impl Parser {
                     name: Ident(name),
                     index: None,
                     visibility,
-                    mutable,
                 })
             }
         } else {
@@ -564,7 +552,19 @@ impl Parser {
     pub fn equality(&mut self) -> Result<Expr> {
         let mut expr = self.comparison()?;
 
-        while let TokenType::BangEqual | TokenType::Equals = self.tokens.peek()?.token_type {
+        while let TokenType::BangEqual | TokenType::Equals | TokenType::Ident(_) = self.tokens.peek()?.token_type {
+            if let TokenType::Ident(s) = self.tokens.peek()?.token_type {
+                if s == "is" {
+                    let _operator = self.tokens.read()?;
+                    let right = self.comparison()?;
+                    expr = Expr {
+                        kind: ExprKind::Binary(BinOp::Eq, P(expr.clone()), P(right)),
+                        line: expr.line,
+                    }
+               } else {
+                   break;
+               }
+            }
             let operator = self.tokens.read()?;
             let right = self.comparison()?;
             if let TokenType::Equals = operator.token_type {
@@ -948,7 +948,6 @@ pub struct Variable {
     pub name: Ident,
     pub index: Option<P<Expr>>,
     pub visibility: VisibilityMode,
-    pub mutable: bool,
 }
 
 #[derive(Clone, Debug)]

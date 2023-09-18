@@ -55,6 +55,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
+        llvm_sys::core::LLVMDumpModule(codegen.module);
         let mut error = std::ptr::null_mut();
         let codegen_type = LLVMCodeGenFileType::LLVMObjectFile;
         if LLVMTargetMachineEmitToFile(codegen.machine, codegen.module, output.to_string().as_mut_ptr() as *mut _, codegen_type, &mut error) == 1 {
