@@ -488,7 +488,7 @@ impl CodeGen {
                 *s
             } else {
                 let ty = LLVMStructCreateNamed(self.context, "Vec\0".as_ptr() as *const _);
-                LLVMStructSetBody(ty, [LLVMInt64TypeInContext(self.context), LLVMPointerType(LLVMVoidType(), 0)].as_mut_ptr(), 2, 0);
+                LLVMStructSetBody(ty, [LLVMPointerType(LLVMVoidType(), 0), LLVMInt64TypeInContext(self.context)].as_mut_ptr(), 2, 0);
                 self.structs.insert("Vec".to_string(), ty);
                 ty
             };
@@ -500,13 +500,16 @@ impl CodeGen {
                 malloc = LLVMAddFunction(self.module, "malloc\0".as_ptr() as *const _, malloc_ty);
                 self.functions.insert("malloc".to_string(), (malloc_ty, false));
             }
-            //let ret = LLVMBuildCall2(self.builder, malloc_ty, malloc, [LLVMConstInt(LLVMInt64Type(), v_array.len() as u64, 0)].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
-            let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), LLVMConstInt(LLVMInt64Type(), 0, 0)];
+            let ret = LLVMBuildCall2(self.builder, malloc_ty, malloc, [LLVMConstInt(LLVMInt64Type(), v_array.len() as u64 * 8, 0)].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 1, 0), LLVMConstInt(LLVMInt64Type(), 0, 0)];
             let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMArrayType(arr_type, v_array.len() as u32), alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, LLVMConstInt(LLVMInt64Type(), v_array.len() as u64, 0), ptr);
+            indices[0] = LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0);
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMArrayType(arr_type, v_array.len() as u32), alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, ret, ptr);
             for (i, value) in v_array.iter().enumerate() {
-                let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 1, 0), LLVMConstInt(LLVMInt64Type(), i as u64, 0)];
-                let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMArrayType(arr_type, v_array.len() as u32), alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), LLVMConstInt(LLVMInt64Type(), i as u64, 0)];
+                let ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMArrayType(arr_type, v_array.len() as u32), ret, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
                 LLVMBuildStore(self.builder, *value, ptr);
             }
             self.scopes.last_mut().unwrap().insert(variable.name.0, (LLVMArrayType(arr_type, v_array.len() as u32), alloc));
@@ -662,8 +665,17 @@ impl CodeGen {
             }
             let element_type = LLVMGetElementType(var.0);
             //let mut indices = [index, LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0)];
-            let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 1, 0), index];
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, var.1, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let mut indices = [LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0),
+                LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0)];
+            let vec_ty = *if let Some(s) = self.structs.get("Vec") {
+                s
+            } else {
+                panic!("Codegen error: Vec struct not created");
+            };
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, var.1, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
+            let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), index];
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, malloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             Ok(LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _))
         } else {
             Ok(LLVMBuildLoad2(self.builder, var.0, var.1, "\0".as_ptr() as *const _))
