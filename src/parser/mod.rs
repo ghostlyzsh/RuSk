@@ -70,6 +70,8 @@ impl Parser {
                     self.return_statement()
                 } else if s == "while" {
                     self.while_statement()
+                } else if s == "add" {
+                    self.add_statement()
                 } else {
                     self.call_expression()
                 }
@@ -204,6 +206,19 @@ impl Parser {
             }
         }
         Err(anyhow!("Parser Error: while"))
+    }
+    pub fn add_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "add" {
+                let value = self.call_expression()?;
+                self.consume(TokenType::Ident("to".to_string()), "Expected \"to\" after add value".to_string())?;
+                self.consume(TokenType::LeftBrace, "Expected variable".to_string())?;
+                let variable = self.handle_variable()?;
+                return Ok(Expr { kind: ExprKind::Add(P(value.clone()), variable), line: value.line})
+            }
+        }
+        Err(anyhow!("Parser Error: add"))
     }
     pub fn set_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
@@ -861,13 +876,11 @@ pub struct Expr {
 #[allow(dead_code)]
 pub enum ExprKind {
     Call(Ident, Vec<P<Expr>>),
-    Set(Variable, P<Expr>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
     While(P<Expr>, P<Block>),
     If(P<Expr>, P<Block>, Option<P<Expr>>),
     Function(Ident, Vec<P<Expr>>, P<Block>, Option<Type>),
-    Return(Option<P<Expr>>),
     Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
@@ -877,6 +890,11 @@ pub enum ExprKind {
     Ident(Ident),
     Arg(Ident, Type),
     Type(Type),
+
+    // (basically) effects
+    Set(Variable, P<Expr>),
+    Return(Option<P<Expr>>),
+    Add(P<Expr>, Variable),
 }
 
 #[derive(Clone, Debug)]
