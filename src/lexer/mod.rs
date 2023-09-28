@@ -41,7 +41,7 @@ impl Lexer {
                     while c[0] == b'\t' || c[0] == b' ' {
                         if c[0] == b'\t' {
                             indent += 4;
-                        } else {
+                        } else if c[0] == b' ' {
                             indent += 1;
                         }
                         self.file.read(&mut c).unwrap();
@@ -58,12 +58,19 @@ impl Lexer {
                         if *self.indent_stack.last().unwrap() != indent {
                             return Err(self.error(3, "Mismatching indent".to_string(), 0, None));
                         }
+                        println!("{}", self.prev_indent);
+                        println!("{}", indent);
                         self.tokens.write_one(self.token_from_type(TokenType::Dedent));
                     } else if sign == 1 {
+                        println!("{}", self.prev_indent);
+                        println!("{}", indent);
                         self.indent_stack.push(indent);
                         self.tokens.write_one(self.token_from_type(TokenType::Indent));
                     }
                     self.prev_indent = indent;
+                    while c[0] == b'\n' {
+                        self.file.read(&mut c).unwrap();
+                    }
                 }
             }
 
