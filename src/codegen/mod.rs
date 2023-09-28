@@ -485,12 +485,6 @@ impl CodeGen {
             } else {
                 arr_type = LLVMTypeOf(v_array.1[0]);
             }
-            if scope.get(&variable.name.0).is_some() {
-                let alloc = scope.get(&variable.name.0).unwrap();
-                let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
-                LLVMBuildStore(self.builder, value, alloc.2);
-                return Ok((v_array.0, value));
-            }
             let vec_ty = if let Some(s) = self.structs.get(&"Vec".to_string()) {
                 *s
             } else {
@@ -499,6 +493,21 @@ impl CodeGen {
                 self.structs.insert("Vec".to_string(), ty);
                 ty
             };
+
+            let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+            if scope.get(&variable.name.0).is_some() {
+                // set variable that already exists
+                let alloc = scope.get(&variable.name.0).unwrap();
+
+                let element_type = LLVMGetElementType(alloc.0);
+                let mut indices = [zero, zero];
+                let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
+
+                let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
+                LLVMBuildStore(self.builder, value, malloc);
+                return Ok((v_array.0, value));
+            }
             let alloc = LLVMBuildAlloca(self.builder, vec_ty, (variable.name.0.clone() + "\0").as_ptr() as *const _);
             if v_array.1.len() == 0 {
                 self.scopes.last_mut().unwrap().insert(variable.name.0,
@@ -519,11 +528,13 @@ impl CodeGen {
             indices[0] = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
             let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, ret, ptr);
-            for (i, value) in v_array.1.iter().enumerate() {
+            let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
+            LLVMBuildStore(self.builder, value, ret);
+            /*for (i, value) in v_array.1.iter().enumerate() {
                 let mut indices = [LLVMConstInt(LLVMInt64Type(), i as u64, 0)];
                 let ptr = LLVMBuildInBoundsGEP2(self.builder, arr_type, ret, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
                 LLVMBuildStore(self.builder, *value, ptr);
-            }
+            }*/
             self.scopes.last_mut().unwrap().insert(variable.name.0,
                                                    (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
             return Ok((v_array.0, alloc));
