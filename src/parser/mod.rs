@@ -792,12 +792,14 @@ impl Parser {
 
     pub fn array(&mut self) -> Result<Expr> {
         let mut list = Vec::new();
-        loop {
-            list.push(P(self.statement()?));
-            if let TokenType::Comma = self.tokens.peek()?.token_type {
-                self.tokens.read()?;
-            } else {
-                break;
+        if self.tokens.peek()?.token_type != TokenType::RightSquare {
+            loop {
+                list.push(P(self.statement()?));
+                if let TokenType::Comma = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                } else {
+                    break;
+                }
             }
         }
         let line = self.consume(TokenType::RightSquare, "Expected \"]\" after list".to_string())?.line;

@@ -2,7 +2,7 @@ use std::{ffi::CString, collections::HashMap};
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type as PType};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass, ipo::LLVMAddFunctionAttrsPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
+use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
 
@@ -53,8 +53,7 @@ impl CodeGen {
         LLVMAddTailCallEliminationPass(opt_passes);
         
         LLVMAddPromoteMemoryToRegisterPass(opt_passes);
-        //LLVMAddFunctionAttrsPass(opt_passes);
-        //LLVMAddInstructionCombiningPass(opt_passes);
+        LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
         LLVMAddGVNPass(opt_passes);
         LLVMAddCFGSimplificationPass(opt_passes);
@@ -131,7 +130,7 @@ impl CodeGen {
             ExprKind::Array(array) => {
                 let mut array = self.process_array(array)?;
                 if array.1.len() == 0 {
-                    return Ok((Type::List(P(Type::Null), 0), LLVMConstArray(LLVMVoidType(), [].as_mut_ptr(), 0)))
+                    return Ok((Type::List(vec![]), LLVMConstArray(LLVMVoidType(), [].as_mut_ptr(), 0)))
                 }
                 Ok((array.0, LLVMConstArray(LLVMTypeOf(array.1[0]), array.1.as_mut_ptr(), array.1.len() as u32)))
             }
@@ -270,7 +269,8 @@ impl CodeGen {
                 }
                 let alloca = LLVMBuildAlloca(self.builder, arg_ty, (name.0.clone() + "\0").as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMGetParam(function, i as u32), alloca);
-                self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, Type::Pointer, alloca));
+                // TODO replace with list logic
+                self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, Type::Pointer(P(Type::Null)), alloca));
             } else {
                 return Err(CodeGenError {
                     kind: ErrorKind::InvalidArgs,
@@ -500,17 +500,22 @@ impl CodeGen {
                 ty
             };
             let alloc = LLVMBuildAlloca(self.builder, vec_ty, (variable.name.0.clone() + "\0").as_ptr() as *const _);
-            let mut malloc = LLVMGetNamedFunction(self.module, "malloc\0".as_ptr() as *const _);
-            let malloc_ty = LLVMFunctionType(LLVMPointerType(LLVMVoidTypeInContext(self.context), 0),
-                                             [LLVMInt64TypeInContext(self.context)].as_mut_ptr(), 1, 0);
-            if malloc.is_null() {
-                malloc = LLVMAddFunction(self.module, "malloc\0".as_ptr() as *const _, malloc_ty);
-                self.functions.insert("malloc".to_string(), (malloc_ty, Type::Pointer, false));
+            if v_array.1.len() == 0 {
+                self.scopes.last_mut().unwrap().insert(variable.name.0,
+                                                       (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
+                return Ok((v_array.0, alloc));
             }
+
+            let (malloc_ty, malloc) = self.get_or_create_function("malloc".to_string(), vec![LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+
+            // call malloc
             let ret = LLVMBuildCall2(self.builder, malloc_ty, malloc, [LLVMConstInt(LLVMInt64Type(), v_array.1.len() as u64 * 8, 0)].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+
+            // get pointer part of Vec
             let mut indices = [LLVMConstInt(LLVMInt32TypeInContext(self.context), 1, 0)];
             let ptr = LLVMBuildInBoundsGEP2(self.builder, arr_type, alloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, LLVMConstInt(LLVMInt64Type(), v_array.1.len() as u64, 0), ptr);
+            // store pointer to malloc call in Vec
             indices[0] = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
             let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, ret, ptr);
@@ -520,7 +525,7 @@ impl CodeGen {
                 LLVMBuildStore(self.builder, *value, ptr);
             }
             self.scopes.last_mut().unwrap().insert(variable.name.0,
-                                                   (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(P(arr_type.into()), v_array.1.len() as u64), alloc));
+                                                   (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
             return Ok((v_array.0, alloc));
         } else {
             let expr = self.match_expr(eval.clone())?;
@@ -616,37 +621,71 @@ impl CodeGen {
             panic!("Codegen error: add (vec type)");
         }
         let zero = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
-        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, zero].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
         let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
         let array_ptr = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMVoidType(), 0), s_array_ptr, "\0".as_ptr() as *const _);
         let size = LLVMBuildLoad2(self.builder, LLVMInt64Type(), size_ptr, "\0".as_ptr() as *const _);
 
-        // realloc
-        let mut realloc = LLVMGetNamedFunction(self.module, "realloc\0".as_ptr() as *const _);
+        // add to array 
         let void_ptr = LLVMPointerType(LLVMVoidTypeInContext(self.context), 0);
-        let realloc_ty = LLVMFunctionType(LLVMPointerType(LLVMVoidTypeInContext(self.context), 0),
-                                         [void_ptr, LLVMInt64TypeInContext(self.context)].as_mut_ptr(), 2, 0);
-        if realloc.is_null() {
-            realloc = LLVMAddFunction(self.module, "realloc\0".as_ptr() as *const _, realloc_ty);
-            self.functions.insert("realloc".to_string(), (realloc_ty, Type::Pointer, false));
-        }
-        let last_index = LLVMBuildNSWAdd(self.builder, size, LLVMConstInt(LLVMInt64Type(), 1, 0), "\0".as_ptr() as *const _);
-        let new_size = LLVMBuildNSWMul(self.builder, last_index, LLVMConstInt(LLVMInt64Type(), 8, 0), "\0".as_ptr() as *const _);
-        let new_ptr = LLVMBuildCall2(self.builder, realloc_ty, realloc, [array_ptr, new_size].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
-        LLVMBuildStore(self.builder, last_index, size_ptr);
-        LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
+        let (alloc_ty, alloc);
+        if vec.1 == Type::List(vec![]) {
+            // add to empty array
+            (alloc_ty, alloc) = self.get_or_create_function("malloc".to_string(), vec![LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            let eight = LLVMConstInt(LLVMInt64Type(), 8, 0);
+            let one = LLVMConstInt(LLVMInt64Type(), 1, 0);
+            let ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [eight].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, one, size_ptr);
+            LLVMBuildStore(self.builder, ptr, s_array_ptr);
 
-        let mut indices = [size];
-        let last_ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMInt64TypeInContext(self.context), new_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
-        LLVMBuildStore(self.builder, value, last_ptr);
-        scopes.iter().enumerate().for_each(|(i, scope)| {
-            if scope.contains_key(&variable.name.0) {
-                let len = LLVMGetArrayLength(vec.0) + 1;
-                let el_ty = LLVMGetElementType(vec.0);
-                let vec_ty = LLVMArrayType(el_ty, len);
-                *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, vec.1.clone(), vec.2);
+            // set last index to value
+            let mut indices = [zero];
+            let last_ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMInt64TypeInContext(self.context), ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, value, last_ptr);
+
+            let mut ret = None;
+            scopes.iter().enumerate().rev().for_each(|(i, scope)| {
+                if scope.contains_key(&variable.name.0) {
+                    let len = LLVMGetArrayLength(vec.0) + 1;
+                    let el_ty = LLVMGetElementType(vec.0);
+                    let vec_ty = LLVMArrayType(LLVMTypeOf(value), len);
+                    if let Type::List(mut v) = vec.1.clone() {
+                        v.push(P(el_ty.into()));
+                        *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, Type::List(v), vec.2);
+                    } else {
+                        ret = Some(Err(CodeGenError {
+                            kind: ErrorKind::NotInScope,
+                            message: "Expected list variable".to_string(),
+                            line: e_value.line,
+                        }.into()));
+                    }
+                }
+            });
+            if let Some(e) = ret {
+                return e;
             }
-        });
+        } else {
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            // add to list
+            let last_index = LLVMBuildNSWAdd(self.builder, size, LLVMConstInt(LLVMInt64Type(), 1, 0), "\0".as_ptr() as *const _);
+            let new_size = LLVMBuildNSWMul(self.builder, last_index, LLVMConstInt(LLVMInt64Type(), 8, 0), "\0".as_ptr() as *const _);
+            let new_ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [array_ptr, new_size].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, last_index, size_ptr);
+            LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
+
+            let mut indices = [size];
+            let last_ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMInt64TypeInContext(self.context), new_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, value, last_ptr);
+            // set new size
+            scopes.iter().enumerate().rev().for_each(|(i, scope)| {
+                if scope.contains_key(&variable.name.0) {
+                    let len = LLVMGetArrayLength(vec.0) + 1;
+                    let el_ty = LLVMGetElementType(vec.0);
+                    let vec_ty = LLVMArrayType(el_ty, len);
+                    *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, vec.1.clone(), vec.2);
+                }
+            });
+        }
 
         Ok((ty, value))
     }
@@ -770,8 +809,9 @@ impl CodeGen {
             let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
             let mut indices = [index.1];
             let ptr = LLVMBuildInBoundsGEP2(self.builder, element_type, malloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            let load = LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _);
             // TODO var.1 isnt inner element type, fix later
-            Ok((var.1.clone(), LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _)))
+            Ok((var.1.clone(), load))
         } else {
             Ok((var.1.clone(), LLVMBuildLoad2(self.builder, var.0, var.2, "\0".as_ptr() as *const _)))
         }
@@ -815,7 +855,7 @@ impl CodeGen {
         let mut argsV = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let arg = arg.clone().into_inner();
-            let mut arg = self.match_expr(arg.clone())?;
+            let mut arg = self.match_expr(arg.clone())?; // hang
             if arg.1.is_null() {
                 return Err(CodeGenError {
                     kind: ErrorKind::Null,
@@ -824,7 +864,7 @@ impl CodeGen {
                 }.into())
             }
             if !function_type.2 {
-                if let Type::List(ref _inner, _) = arg.0 {
+                if let Type::List(ref _inner) = arg.0 {
                     let element_type = LLVMGetElementType(LLVMTypeOf(arg.1));
                     //let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
                     let mut int = LLVMConstInt(LLVMInt32Type(), 0, 0);
@@ -1007,14 +1047,15 @@ impl CodeGen {
             ty = value.0;
         }
 
-        Ok((Type::List(P(ty), array_values.len() as u64), array_values))
+        Ok((Type::List(vec![P(ty); array_values.len()]), array_values))
     }
 
     pub unsafe fn gen_lit(&mut self, lit: Literal) -> Result<(Type, LLVMValueRef)> {
         match lit {
             Literal::Text(text) => {
                 let c_str = CString::new(text.clone()).unwrap();
-                Ok((Type::Text(text.len() as u64), LLVMBuildGlobalStringPtr(self.builder, c_str.as_ptr(), "\0".as_ptr() as *const _)))
+                //Ok((Type::List(vec![P(Type::Char); text.len()]), LLVMConstString(c_str.as_ptr(), text.len() as u32, 0)))
+                Ok((Type::List(vec![P(Type::Char); text.len()]), LLVMBuildGlobalStringPtr(self.builder, c_str.as_ptr(), "\0".as_ptr() as *const _)))
             }
             Literal::Number(num) => {
                 Ok((Type::Float, LLVMConstReal(LLVMFloatTypeInContext(self.context), num)))
@@ -1027,16 +1068,27 @@ impl CodeGen {
             }
         }
     }
+
+    pub unsafe fn get_or_create_function(&mut self, name: String, mut args: Vec<LLVMTypeRef>, ret: LLVMTypeRef) -> (LLVMTypeRef, LLVMValueRef) {
+        let mut function = LLVMGetNamedFunction(self.module, (name.clone() + "\0").as_ptr() as *const _);
+        let function_ty = LLVMFunctionType(ret,
+                                         args.as_mut_ptr(), args.len() as u32, 0);
+        if function.is_null() {
+            function = LLVMAddFunction(self.module, (name.clone() + "\0").as_ptr() as *const _, function_ty);
+            self.functions.insert(name, (function_ty, ret.into(), false));
+        }
+        (function_ty, function)
+    }
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Type {
     Integer,
     Float,
     Boolean,
     Null,
-    Text(u64),
-    List(P<Type>, u64),
-    Pointer,
+    Char,
+    List(Vec<P<Type>>),
+    Pointer(P<Type>),
 }
 impl PartialEq<Type> for Type {
     fn eq(&self, other: &Type) -> bool {
@@ -1046,9 +1098,20 @@ impl PartialEq<Type> for Type {
             (Float, Float) => true,
             (Boolean, Boolean) => true,
             (Null, Null) => true,
-            (Text(a), Text(b)) => a == b,
-            (List(a, l), List(b, w)) => a.into_inner() == b.into_inner() && l == w,
-            (Pointer, Pointer) => true,
+            (List(a), List(b)) => {
+                if a.len() != b.len() {
+                    return false
+                }
+                let mut equal = true;
+                for i in 0..a.len() {
+                    if a[i].clone().into_inner() != b[i].clone().into_inner() {
+                        equal = false;
+                        break;
+                    }
+                }
+                equal
+            }
+            //(Pointer, Pointer) => true,
             _ => false,
         }
     }
@@ -1069,9 +1132,10 @@ impl From<LLVMTypeRef> for Type {
                     }
                 }
                 LLVMTypeKind::LLVMFloatTypeKind => Self::Float,
-                LLVMTypeKind::LLVMPointerTypeKind => Self::Pointer,
+                LLVMTypeKind::LLVMVoidTypeKind => Self::Null,
+                LLVMTypeKind::LLVMPointerTypeKind => Self::Pointer(P(Type::Null)),
                 _ => {
-                    panic!("Unexpected LLVM type");
+                    panic!("Unexpected LLVM type {:?}", kind);
                 }
             }
         }
