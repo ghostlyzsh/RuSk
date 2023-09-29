@@ -2,7 +2,7 @@ use std::{ffi::CString, collections::HashMap};
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type as PType};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMRealPredicate, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}, LLVMIntPredicate};
+use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
 
@@ -370,9 +370,9 @@ impl CodeGen {
             LLVMAddIncoming(phi, &mut else_v.1, &mut elseBB, 1);
             Ok((then.0, phi))
         } else {
-            let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
-            let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
-                                          condition.1, zero, "ifcond\0".as_ptr() as *const _);
+            //let zero = LLVMConstReal(LLVMFloatTypeInContext(self.context), 0.);
+            //let condition = LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealONE,
+            //                              condition.1, zero, "ifcond\0".as_ptr() as *const _);
             
             let function = LLVMGetBasicBlockParent(LLVMGetInsertBlock(self.builder));
             let thenBB = LLVMAppendBasicBlockInContext(self.context, function,
@@ -381,7 +381,7 @@ impl CodeGen {
                                                        b"else\0".as_ptr() as *const _);
             let mergeBB = LLVMCreateBasicBlockInContext(self.context,
                                                        b"ifcont\0".as_ptr() as *const _);
-            LLVMBuildCondBr(self.builder, condition, thenBB, elseBB);
+            LLVMBuildCondBr(self.builder, condition.1, thenBB, elseBB);
 
             LLVMPositionBuilderAtEnd(self.builder, thenBB);
             self.scopes.push(HashMap::new());
