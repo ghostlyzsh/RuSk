@@ -82,6 +82,14 @@ impl Parser {
             }
             TokenType::Dedent => {
                 let token = self.tokens.read()?;
+                /*if let TokenType::Newline = token.token_type {
+                    self.tokens.read()?;
+                    if let TokenType::Indent = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                    } else {
+                        self.tokens.back_1();
+                    }
+                }*/
                 Err(self.error(1003, "Unexpected dedent".to_string(), None, 0, token))
             }
             TokenType::Newline => {

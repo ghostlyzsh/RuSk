@@ -37,35 +37,47 @@ impl Lexer {
             }
             if self.tokens.len() != 0 {
                 if let TokenType::Newline = self.tokens.last().token_type {
-                    let mut indent: u32 = 0;
-                    while c[0] == b'\t' || c[0] == b' ' {
-                        if c[0] == b'\t' {
-                            indent += 4;
-                        } else if c[0] == b' ' {
-                            indent += 1;
+                    self.file.read(&mut c).unwrap();
+                    if c[0] == b'\n' {
+                        while c[0] == b'\n' {
+                            self.line += 1;
+                            self.tokens.write_one(self.token_from_type(TokenType::Newline));
+                            self.file.read(&mut c).unwrap();
                         }
+                    } else {
+                        self.file.set_position(self.file.position()-2);
                         self.file.read(&mut c).unwrap();
-                    }
-                    let sign = (indent as i64 - self.prev_indent as i64).signum();
-                    if sign == -1 {
-                        loop {
-                            match self.indent_stack.pop() {
-                                Some(i) => i,
-                                None => break 
-                            };
-                            if *self.indent_stack.last().unwrap() <= indent { break }
+                        let mut indent: u32 = 0;
+                        if c[0] == 10 {
+                            indent = *self.indent_stack.last().unwrap();
+                        } else {
+                            while c[0] == b'\t' || c[0] == b' ' {
+                                if c[0] == b'\t' {
+                                    indent += 4;
+                                } else if c[0] == b' ' {
+                                    indent += 1;
+                                }
+                                self.file.read(&mut c).unwrap();
+                            }
                         }
-                        if *self.indent_stack.last().unwrap() != indent {
-                            return Err(self.error(3, "Mismatching indent".to_string(), 0, None));
+                        let sign = (indent as i64 - *self.indent_stack.last().unwrap() as i64).signum();
+                        if sign == -1 {
+                            loop {
+                                match self.indent_stack.pop() {
+                                    Some(i) => i,
+                                    None => break 
+                                };
+                                self.tokens.write_one(self.token_from_type(TokenType::Dedent));
+                                if *self.indent_stack.last().unwrap() <= indent { break }
+                            }
+                            if *self.indent_stack.last().unwrap() != indent {
+                                return Err(self.error(3, "Mismatching indent".to_string(), 0, None));
+                            }
+                        } else if sign == 1 {
+                            self.indent_stack.push(indent);
+                            self.tokens.write_one(self.token_from_type(TokenType::Indent));
                         }
-                        self.tokens.write_one(self.token_from_type(TokenType::Dedent));
-                    } else if sign == 1 {
-                        self.indent_stack.push(indent);
-                        self.tokens.write_one(self.token_from_type(TokenType::Indent));
-                    }
-                    self.prev_indent = indent;
-                    while c[0] == b'\n' {
-                        self.file.read(&mut c).unwrap();
+                        //self.prev_indent = indent;
                     }
                 }
             }
