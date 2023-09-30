@@ -1,3 +1,5 @@
+mod ty;
+
 use std::{ffi::CString, collections::HashMap};
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type as PType};
@@ -5,6 +7,7 @@ use anyhow::{Result, anyhow};
 use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
+use ty::*;
 
 pub struct CodeGen {
     pub exprs: Vec<P<Expr>>,
@@ -53,7 +56,7 @@ impl CodeGen {
         LLVMAddTailCallEliminationPass(opt_passes);
         
         LLVMAddPromoteMemoryToRegisterPass(opt_passes);
-        LLVMAddInstructionCombiningPass(opt_passes);
+        //LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
         LLVMAddGVNPass(opt_passes);
         LLVMAddCFGSimplificationPass(opt_passes);
@@ -142,6 +145,9 @@ impl CodeGen {
             }
             ExprKind::Add(value, variable) => {
                 self.gen_add(value.into_inner(), variable)
+            }
+            ExprKind::Pop(variable) => {
+                self.gen_pop(variable, expr.line)
             }
             ExprKind::If(cond, block, el) => {
                 self.gen_if(cond.into_inner(), block.into_inner(), el)
@@ -677,6 +683,16 @@ impl CodeGen {
             }
         } else {
             (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+
+            // type check
+            if !vec.1.element_eq(&ty) {
+                return Err(CodeGenError {
+                    kind: ErrorKind::MismatchedTypes,
+                    message: "Mismatching element type".to_string(),
+                    line: e_value.line,
+                }.into())
+            }
+
             // add to list
             let last_index = LLVMBuildNSWAdd(self.builder, size, LLVMConstInt(LLVMInt64Type(), 1, 0), "\0".as_ptr() as *const _);
             let new_size = LLVMBuildNSWMul(self.builder, last_index, LLVMConstInt(LLVMInt64Type(), 8, 0), "\0".as_ptr() as *const _);
@@ -685,7 +701,7 @@ impl CodeGen {
             LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
 
             let mut indices = [size];
-            let last_ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMInt64TypeInContext(self.context), new_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            let last_ptr = LLVMBuildInBoundsGEP2(self.builder, ty.clone().into(), new_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, value, last_ptr);
             // set new size
             scopes.iter().enumerate().rev().for_each(|(i, scope)| {
@@ -699,6 +715,102 @@ impl CodeGen {
         }
 
         Ok((ty, value))
+    }
+    pub unsafe fn gen_pop(&mut self, variable: Variable, line: u32) -> Result<(Type, LLVMValueRef)> {
+        let mut vec = None;
+        let scopes = self.scopes.clone();
+        scopes.iter().for_each(|scope| {
+            match scope.get(&variable.name.0) {
+                Some(v) => {
+                    vec = Some(v)
+                }
+                None => {}
+            };
+        });
+        let vec = match vec {
+            Some(v) => v,
+            None => return Err(CodeGenError {
+                kind: ErrorKind::NotInScope,
+                message: "Variable not in scope".to_string(),
+                line,
+            }.into())
+        };
+        if vec.0.is_null() {
+            return Err(CodeGenError {
+                kind: ErrorKind::NotInScope,
+                message: "Variable not in scope".to_string(),
+                line,
+            }.into())
+        }
+        if !vec.1.is_list() {
+            return Err(CodeGenError {
+                kind: ErrorKind::MismatchedTypes,
+                message: "Expected list type in pop".to_string(),
+                line,
+            }.into())
+        }
+        let vec_ty = *if let Some(s) = self.structs.get("Vec") {
+            s
+        } else {
+            return Err(CodeGenError {
+                kind: ErrorKind::NotInScope,
+                message: "Variable not in scope".to_string(),
+                line,
+            }.into())
+        };
+        
+        let mut first_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec_ty) as usize);
+        LLVMGetStructElementTypes(vec_ty, first_tys.as_mut_ptr());
+        let mut second_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec.0) as usize);
+        LLVMGetStructElementTypes(vec.0, second_tys.as_mut_ptr());
+
+        if first_tys != second_tys {
+            panic!("Codegen error: add (vec type)");
+        }
+        let zero = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
+        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+        let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+        let array_ptr = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMVoidType(), 0), s_array_ptr, "\0".as_ptr() as *const _);
+        let size = LLVMBuildLoad2(self.builder, LLVMInt64Type(), size_ptr, "\0".as_ptr() as *const _);
+
+        // add to array 
+        // set last index to value
+
+        let void_ptr = LLVMPointerType(LLVMVoidTypeInContext(self.context), 0);
+        let (alloc_ty, alloc);
+        if vec.1 == Type::List(vec![]) {
+            return Err(CodeGenError {
+                kind: ErrorKind::MismatchedTypes,
+                message: "Expected non-empty list".to_string(),
+                line,
+            }.into());
+        } else {
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            // add to list
+            let last_index = LLVMBuildNSWSub(self.builder, size, LLVMConstInt(LLVMInt64Type(), 1, 0), "\0".as_ptr() as *const _);
+            let new_size = LLVMBuildNSWMul(self.builder, last_index, LLVMConstInt(LLVMInt64Type(), 8, 0), "\0".as_ptr() as *const _);
+
+            let mut indices = [last_index];
+            let last_ptr = LLVMBuildInBoundsGEP2(self.builder, LLVMInt64TypeInContext(self.context),
+                            array_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            let last_value = LLVMBuildLoad2(self.builder, vec.1.get_element().into(), last_ptr, "\0".as_ptr() as *const _);
+
+            let new_ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [array_ptr, new_size].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, last_index, size_ptr);
+            LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
+
+
+            // set new size
+            scopes.iter().enumerate().rev().for_each(|(i, scope)| {
+                if scope.contains_key(&variable.name.0) {
+                    let len = LLVMGetArrayLength(vec.0) + 1;
+                    let el_ty = LLVMGetElementType(vec.0);
+                    let vec_ty = LLVMArrayType(el_ty, len);
+                    *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, vec.1.clone(), vec.2);
+                }
+            });
+            Ok((vec.1.clone(), last_value))
+        }
     }
 
     pub unsafe fn gen_native(&mut self, name: Ident, args: Vec<P<Expr>>, var: bool, ret: Option<P<Expr>>) -> Result<(Type, LLVMValueRef)> {
@@ -1069,7 +1181,7 @@ impl CodeGen {
                 Ok((Type::List(vec![P(Type::Char); text.len()]), LLVMBuildGlobalStringPtr(self.builder, c_str.as_ptr(), "\0".as_ptr() as *const _)))
             }
             Literal::Number(num) => {
-                Ok((Type::Float, LLVMConstReal(LLVMFloatTypeInContext(self.context), num)))
+                Ok((Type::Float, LLVMConstReal(LLVMDoubleTypeInContext(self.context), num)))
             }
             Literal::Integer(num) => {
                 Ok((Type::Integer, LLVMConstInt(LLVMInt64TypeInContext(self.context), std::mem::transmute(num), 1)))
@@ -1089,67 +1201,6 @@ impl CodeGen {
             self.functions.insert(name, (function_ty, ret.into(), false));
         }
         (function_ty, function)
-    }
-}
-#[derive(Clone, Debug)]
-pub enum Type {
-    Integer,
-    Float,
-    Boolean,
-    Null,
-    Char,
-    List(Vec<P<Type>>),
-    Pointer(P<Type>),
-}
-impl PartialEq<Type> for Type {
-    fn eq(&self, other: &Type) -> bool {
-        use Type::*;
-        match (self.clone(), other.clone()) {
-            (Integer, Integer) => true,
-            (Float, Float) => true,
-            (Boolean, Boolean) => true,
-            (Null, Null) => true,
-            (List(a), List(b)) => {
-                if a.len() != b.len() {
-                    return false
-                }
-                let mut equal = true;
-                for i in 0..a.len() {
-                    if a[i].clone().into_inner() != b[i].clone().into_inner() {
-                        equal = false;
-                        break;
-                    }
-                }
-                equal
-            }
-            //(Pointer, Pointer) => true,
-            _ => false,
-        }
-    }
-}
-impl From<LLVMTypeRef> for Type {
-    fn from(ty: LLVMTypeRef) -> Self {
-        unsafe {
-            let kind = LLVMGetTypeKind(ty);
-            match kind {
-                LLVMTypeKind::LLVMIntegerTypeKind => {
-                    let width = LLVMGetIntTypeWidth(ty);
-                    if width == 64 {
-                        Self::Integer
-                    } else if width == 1 {
-                        Self::Boolean
-                    } else {
-                        panic!("Unexpected LLVM type");
-                    }
-                }
-                LLVMTypeKind::LLVMFloatTypeKind => Self::Float,
-                LLVMTypeKind::LLVMVoidTypeKind => Self::Null,
-                LLVMTypeKind::LLVMPointerTypeKind => Self::Pointer(P(Type::Null)),
-                _ => {
-                    panic!("Unexpected LLVM type {:?}", kind);
-                }
-            }
-        }
     }
 }
 

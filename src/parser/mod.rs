@@ -71,7 +71,9 @@ impl Parser {
                 } else if s == "while" {
                     self.while_statement()
                 } else if s == "add" {
-                    self.add_statement()
+                    self.add_or_pop_statement()
+                } else if s == "pop" {
+                    self.add_or_pop_statement()
                 } else {
                     self.call_expression()
                 }
@@ -215,7 +217,7 @@ impl Parser {
         }
         Err(anyhow!("Parser Error: while"))
     }
-    pub fn add_statement(&mut self) -> Result<Expr> {
+    pub fn add_or_pop_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
         if let TokenType::Ident(i) = token.clone().token_type {
             if i == "add" {
@@ -224,6 +226,10 @@ impl Parser {
                 self.consume(TokenType::LeftBrace, "Expected variable".to_string())?;
                 let variable = self.handle_variable()?;
                 return Ok(Expr { kind: ExprKind::Add(P(value.clone()), variable), line: value.line})
+            } else if i == "pop" {
+                self.consume(TokenType::LeftBrace, "Expected variable".to_string())?;
+                let variable = self.handle_variable()?;
+                return Ok(Expr { kind: ExprKind::Pop(variable), line: token.line})
             }
         }
         Err(anyhow!("Parser Error: add"))
@@ -434,7 +440,7 @@ impl Parser {
     pub fn arguments(&mut self) -> Result<Vec<P<Expr>>> {
         let mut exprs = Vec::new();
         while TokenType::RightParen != self.tokens.peek()?.token_type {
-            exprs.push(P(self.expression()?));
+            exprs.push(P(self.statement()?));
             if let TokenType::Comma = self.tokens.peek()?.token_type {
                 self.tokens.read()?;
             } else {
@@ -905,6 +911,7 @@ pub enum ExprKind {
     Set(Variable, P<Expr>),
     Return(Option<P<Expr>>),
     Add(P<Expr>, Variable),
+    Pop(Variable),
 }
 
 #[derive(Clone, Debug)]
