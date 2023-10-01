@@ -87,8 +87,8 @@ impl From<LLVMTypeRef> for Type {
                     let width = LLVMGetIntTypeWidth(ty);
                     if width == 64 {
                         Self::Integer
-                    } else if width == 1 {
-                        Self::Boolean
+                    } else if width == 8 {
+                        Self::Char
                     } else {
                         panic!("Unexpected LLVM type");
                     }
@@ -111,7 +111,7 @@ impl From<Type> for LLVMTypeRef {
                 Null => LLVMVoidType(),
                 Integer => LLVMInt64Type(),
                 Float => LLVMDoubleType(),
-                Boolean => LLVMInt1Type(),
+                Boolean => LLVMInt8Type(),
                 Char => LLVMInt8Type(),
                 Pointer(inner) => LLVMPointerType(inner.into_inner().into(), 0),
                 List(inners) => {

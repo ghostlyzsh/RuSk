@@ -589,7 +589,8 @@ impl Parser {
                     expr = Expr {
                         kind: ExprKind::Binary(BinOp::Eq, P(expr.clone()), P(right)),
                         line: expr.line,
-                    }
+                    };
+                    continue;
                } else {
                    break;
                }
