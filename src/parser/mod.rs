@@ -302,7 +302,7 @@ impl Parser {
             self.consume(TokenType::Colon, "Expected \":\" in type declaration".to_string())?;
             if let TokenType::Ident(t) = self.tokens.peek()?.token_type {
                 self.tokens.read()?;
-                let tt;
+                let mut tt;
                 match t.as_str() {
                     "text" => {
                         tt = Type::Text;
@@ -325,6 +325,11 @@ impl Parser {
                     t => {
                         return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
                     }
+                }
+                while let TokenType::LeftSquare = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    self.consume(TokenType::RightSquare, "Expected \"]\" to finish list type".to_string())?;
+                    tt = Type::List(P(tt));
                 }
                 exprs.push(P(Expr {
                     kind: ExprKind::Arg(Ident(ident), tt),
@@ -975,7 +980,7 @@ pub enum Type {
     Number,
     Integer,
     Boolean,
-    Array(P<Type>),
+    List(P<Type>),
 }
 
 #[derive(Clone, Debug)]

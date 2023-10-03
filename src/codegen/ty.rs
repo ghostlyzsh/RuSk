@@ -4,6 +4,7 @@ use crate::parser::ptr::P;
 
 #[derive(Clone, Debug)]
 pub enum Type {
+    Text(u32),
     Integer,
     Float,
     Boolean,
@@ -21,6 +22,7 @@ impl Type {
             (Boolean, Boolean) => true,
             (Null, Null) => true,
             (Char, Char) => true,
+            (Text(_), Text(_)) => true,
             (List(_), List(_)) => true,
             (Pointer(_), Pointer(_)) => true,
             _ => false,
@@ -30,12 +32,13 @@ impl Type {
         use Type::*;
         match self.clone() {
             List(tys) => tys[0].clone().into_inner().surface_eq(other),
+            Text(_) => Type::Char.surface_eq(other),
             Pointer(ty) => ty.surface_eq(other),
             _ => panic!("Expected list type in codegen")
         }
     }
     pub fn is_list(&self) -> bool {
-        if let Type::List(_) = self {
+        if let Type::List(_) | Type::Text(_) = self {
             true
         } else {
             false
@@ -46,6 +49,8 @@ impl Type {
             a[0].clone().into_inner()
         } else if let Type::Pointer(a) = self {
             a.clone().into_inner()
+        } else if let Type::Text(_) = self {
+            Type::Char
         } else {
             panic!("Codegen error: expected list");
         }
@@ -60,6 +65,7 @@ impl PartialEq<Type> for Type {
             (Boolean, Boolean) => true,
             (Null, Null) => true,
             (Char, Char) => true,
+            (Text(a), Text(b)) => a == b,
             (List(a), List(b)) => {
                 if a.len() != b.len() {
                     return false
@@ -113,6 +119,7 @@ impl From<Type> for LLVMTypeRef {
                 Float => LLVMDoubleType(),
                 Boolean => LLVMInt8Type(),
                 Char => LLVMInt8Type(),
+                Text(_) => LLVMPointerType(LLVMInt8Type(), 0),
                 Pointer(inner) => LLVMPointerType(inner.into_inner().into(), 0),
                 List(inners) => {
                     LLVMPointerType(inners[0].clone().into_inner().into(), 0)

@@ -1,10 +1,10 @@
 mod ty;
 
-use std::{ffi::CString, collections::HashMap};
+use std::collections::HashMap;
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type as PType};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, LLVMTypeKind, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
+use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
 use ty::*;
@@ -56,7 +56,7 @@ impl CodeGen {
         LLVMAddTailCallEliminationPass(opt_passes);
         
         LLVMAddPromoteMemoryToRegisterPass(opt_passes);
-        //LLVMAddInstructionCombiningPass(opt_passes);
+        LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
         LLVMAddGVNPass(opt_passes);
         LLVMAddCFGSimplificationPass(opt_passes);
@@ -481,10 +481,16 @@ impl CodeGen {
         let scope = scopes.iter().fold(HashMap::new(), |sum, v| sum.into_iter().chain(v).collect());
         let value: LLVMValueRef;
         let ty: Type;
-        if let ExprKind::Array(array) = eval.clone().kind {
+        if let ExprKind::Array(_) | ExprKind::Lit(Literal::Text(_)) = eval.clone().kind {
             // set {variable::1} to [1, 2, 3] will NOT work right now.
             // TODO fix that
-            let mut v_array = self.process_array(array)?;
+            let mut v_array = if let ExprKind::Array(array) = eval.clone().kind {
+                self.process_array(array)?
+            } else if let ExprKind::Lit(Literal::Text(text)) = eval.clone().kind {
+                self.process_text(text)?
+            } else {
+                panic!("Codegen error: found invalid list type");
+            };
             let arr_type;
             if v_array.1.len() == 0 {
                 arr_type = LLVMVoidType();
@@ -539,6 +545,7 @@ impl CodeGen {
             indices[1] = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
             let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, ret, ptr);
+            v_array.1.push(LLVMConstInt(LLVMInt8Type(), 0, 0));
             let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
             LLVMBuildStore(self.builder, value, ret);
             /*for (i, value) in v_array.1.iter().enumerate() {
@@ -546,8 +553,13 @@ impl CodeGen {
                 let ptr = LLVMBuildInBoundsGEP2(self.builder, arr_type, ret, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
                 LLVMBuildStore(self.builder, *value, ptr);
             }*/
-            self.scopes.last_mut().unwrap().insert(variable.name.0,
-                                                   (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
+            if let Type::List(_) = v_array.0 {
+                self.scopes.last_mut().unwrap().insert(variable.name.0,
+                                                       (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
+            } else if let Type::Text(len) = v_array.0 {
+                self.scopes.last_mut().unwrap().insert(variable.name.0,
+                                                       (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::Text(len), alloc));
+            }
             return Ok((v_array.0, alloc));
         } else {
             let expr = self.match_expr(eval.clone())?;
@@ -686,7 +698,7 @@ impl CodeGen {
             if let Some(e) = ret {
                 return e;
             }
-        } else {
+        } else if let Type::List(_) = vec.1 {
             (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
 
             // type check
@@ -716,6 +728,41 @@ impl CodeGen {
             scopes.iter().enumerate().rev().for_each(|(i, scope)| {
                 if scope.contains_key(&variable.name.0) {
                     let len = LLVMGetArrayLength(vec.0) + 1;
+                    let el_ty = LLVMGetElementType(vec.0);
+                    let vec_ty = LLVMArrayType(el_ty, len);
+                    *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, vec.1.clone(), vec.2);
+                }
+            });
+        } else {
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+
+            if !vec.1.surface_eq(&ty) {
+                return Err(CodeGenError {
+                    kind: ErrorKind::MismatchedTypes,
+                    message: "Mismatching element type".to_string(),
+                    line: e_value.line,
+                }.into())
+            }
+            let other_len = if let Type::Text(len) = ty {
+                len
+            } else {
+                panic!("Codegen error: Mismatching types in \"add\" of text types");
+            };
+
+            let new_size = LLVMBuildNSWAdd(self.builder, size, LLVMConstInt(LLVMInt64Type(), other_len as u64, 0), "\0".as_ptr() as *const _);
+            let new_ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [array_ptr, new_size].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, new_size, size_ptr);
+            LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
+
+            let (memcpy_ty, memcpy) = self.get_or_create_function("llvm.memcpy.p0.p0.i32".to_string(),
+                vec![void_ptr, void_ptr, LLVMInt32Type(), LLVMInt1Type()], LLVMVoidType());
+
+            let cpy_ptr = LLVMBuildGEP2(self.builder, LLVMInt8Type(), new_ptr, [size].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+            LLVMBuildCall2(self.builder, memcpy_ty, memcpy, [cpy_ptr, value, LLVMConstInt(LLVMInt32Type(), other_len as u64, 0), LLVMConstInt(LLVMInt1Type(), 0, 0)].as_mut_ptr(), 4, "\0".as_ptr() as *const _);
+
+            scopes.iter().enumerate().rev().for_each(|(i, scope)| {
+                if scope.contains_key(&variable.name.0) {
+                    let len = LLVMGetArrayLength(vec.0) + other_len;
                     let el_ty = LLVMGetElementType(vec.0);
                     let vec_ty = LLVMArrayType(el_ty, len);
                     *self.scopes.get_mut(i).unwrap().get_mut(&variable.name.0).unwrap() = (vec_ty, vec.1.clone(), vec.2);
@@ -807,11 +854,11 @@ impl CodeGen {
             let last_ptr = LLVMBuildInBoundsGEP2(self.builder, vec.1.get_element().into(),
                             array_ptr, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             let last_value = LLVMBuildLoad2(self.builder, vec.1.get_element().into(), last_ptr, "\0".as_ptr() as *const _);
+            LLVMBuildStore(self.builder, zero, last_ptr);
 
             let new_ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [array_ptr, new_size].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, last_index, size_ptr);
             LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
-
 
             // set new size
             scopes.iter().enumerate().rev().for_each(|(i, scope)| {
@@ -948,6 +995,17 @@ impl CodeGen {
             let load = LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _);
             // TODO var.1 isnt inner element type, fix later
             Ok((var.1.get_element(), load))
+        } else if let Type::Text(_) = var.1 {
+            let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+            let vec_ty = *if let Some(s) = self.structs.get("Vec") {
+                s
+            } else {
+                panic!("Codegen error: Vec struct not created");
+            };
+            let mut indices = [zero, zero];
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let load = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMInt8Type(), 0), ptr, "\0".as_ptr() as *const _);
+            Ok((var.1.clone(), load))
         } else {
             Ok((var.1.clone(), LLVMBuildLoad2(self.builder, var.0, var.2, "\0".as_ptr() as *const _)))
         }
@@ -1194,13 +1252,19 @@ impl CodeGen {
 
         Ok((Type::List(vec![P(first); array_values.len()]), array_values))
     }
+    pub unsafe fn process_text(&mut self, text: String) -> Result<(Type, Vec<LLVMValueRef>)> {
+        let mut array_values = Vec::new();
+        for element in text.chars() {
+            array_values.push(LLVMConstInt(LLVMInt8Type(), element as u64, 0));
+        }
+
+        Ok((Type::Text(array_values.len() as u32), array_values))
+    }
 
     pub unsafe fn gen_lit(&mut self, lit: Literal) -> Result<(Type, LLVMValueRef)> {
         match lit {
             Literal::Text(text) => {
-                let c_str = CString::new(text.clone()).unwrap();
-                //Ok((Type::List(vec![P(Type::Char); text.len()]), LLVMConstString(c_str.as_ptr(), text.len() as u32, 0)))
-                Ok((Type::List(vec![P(Type::Char); text.len()]), LLVMBuildGlobalStringPtr(self.builder, c_str.as_ptr(), "\0".as_ptr() as *const _)))
+                Ok((Type::Text(text.len() as u32), LLVMBuildGlobalStringPtr(self.builder, (text + "\0").as_ptr() as *const _, "\0".as_ptr() as *const _)))
             }
             Literal::Number(num) => {
                 Ok((Type::Float, LLVMConstReal(LLVMDoubleTypeInContext(self.context), num)))

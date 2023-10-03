@@ -1,0 +1,10 @@
+native function printf(msg: text, ...) :: int
+
+function thing(arg: int[]):
+    set {index} to 0
+
+set {variable} to "Hello world and you too "
+
+#add " and you too " to {variable}
+
+printf("%s\n\0", {variable})
