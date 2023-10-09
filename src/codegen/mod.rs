@@ -56,7 +56,7 @@ impl CodeGen {
         LLVMAddTailCallEliminationPass(opt_passes);
         
         LLVMAddPromoteMemoryToRegisterPass(opt_passes);
-        LLVMAddInstructionCombiningPass(opt_passes);
+        //LLVMAddInstructionCombiningPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
         LLVMAddGVNPass(opt_passes);
         LLVMAddCFGSimplificationPass(opt_passes);
@@ -491,7 +491,6 @@ impl CodeGen {
             indices[1] = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
             let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, ret, ptr);
-            v_array.1.push(LLVMConstInt(LLVMInt8Type(), 0, 0));
             let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
             LLVMBuildStore(self.builder, value, ret);
             /*for (i, value) in v_array.1.iter().enumerate() {
@@ -1196,6 +1195,7 @@ impl CodeGen {
             array_values.push(value.1);
         }
 
+        println!("{}", array_values.len());
         Ok((Type::List(vec![P(first); array_values.len()]), array_values))
     }
     pub unsafe fn process_text(&mut self, text: String) -> Result<(Type, Vec<LLVMValueRef>)> {
