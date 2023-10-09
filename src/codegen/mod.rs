@@ -185,27 +185,8 @@ impl CodeGen {
         let mut f_args = Vec::with_capacity(args.len());
         for arg in args.clone() {
             if let ExprKind::Arg(_name, ty) = arg.kind.clone() {
-                match ty {
-                    PType::Text => {
-                        f_args.push(LLVMPointerType(LLVMInt8TypeInContext(self.context), 0));
-                    }
-                    PType::Number => {
-                        f_args.push(LLVMFloatTypeInContext(self.context));
-                    }
-                    PType::Integer => {
-                        f_args.push(LLVMInt64TypeInContext(self.context));
-                    }
-                    PType::Boolean => {
-                        f_args.push(LLVMInt1TypeInContext(self.context));
-                    }
-                    _ => { // add array functionality later
-                        return Err(CodeGenError {
-                            kind: ErrorKind::InvalidArgs,
-                            message: "Codegen error: function arg".to_string(),
-                            line: arg.line,
-                        }.into())
-                    }
-                };
+                let ty: Type = ty.into();
+                f_args.push(ty.into());
             } else {
                 return Err(CodeGenError {
                     kind: ErrorKind::InvalidArgs,
@@ -216,27 +197,8 @@ impl CodeGen {
         }
         let ret_type;
         if let Some(ty) = ret {
-            match ty {
-                PType::Text => {
-                    ret_type = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-                }
-                PType::Number => {
-                    ret_type = LLVMFloatTypeInContext(self.context);
-                }
-                PType::Integer => {
-                    ret_type = LLVMInt64TypeInContext(self.context);
-                }
-                PType::Boolean => {
-                    ret_type = LLVMInt1TypeInContext(self.context);
-                }
-                _ => { // add array functionality later
-                    return Err(CodeGenError {
-                        kind: ErrorKind::InvalidArgs,
-                        message: "Codegen error: function arg".to_string(),
-                        line: args[0].line,
-                    }.into())
-                }
-            }
+            let ty: Type = ty.into();
+            ret_type = ty.into();
         } else {
             ret_type = LLVMVoidTypeInContext(self.context);
         }
@@ -245,34 +207,16 @@ impl CodeGen {
         let function = LLVMAddFunction(self.module, (name.0.clone() + "\0").as_ptr() as *const _, function_type);
         LLVMSetLinkage(function, llvm_sys::LLVMLinkage::LLVMExternalLinkage);
 
-        let bb = LLVMAppendBasicBlockInContext(self.context, function, format!("{}\0", name.0).as_ptr() as *const _);
+        let orig_bb = LLVMGetInsertBlock(self.builder);
+        let bb = LLVMAppendBasicBlockInContext(self.context, function, "\0".as_ptr() as *const _);
         LLVMPositionBuilderAtEnd(self.builder, bb);
 
         self.scopes.push(HashMap::new());
         for (i, arg) in args.clone().iter().enumerate() {
             if let ExprKind::Arg(name, ty) = arg.kind.clone() {
-                let arg_ty;
-                match ty {
-                    PType::Text => {
-                        arg_ty = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-                    }
-                    PType::Number => {
-                        arg_ty = LLVMFloatTypeInContext(self.context);
-                    }
-                    PType::Integer => {
-                        arg_ty = LLVMInt64TypeInContext(self.context);
-                    }
-                    PType::Boolean => {
-                        arg_ty = LLVMInt1TypeInContext(self.context);
-                    }
-                    _ => { // add array functionality later
-                        return Err(CodeGenError {
-                            kind: ErrorKind::InvalidArgs,
-                            message: "Codegen error: function arg".to_string(),
-                            line: args[0].line,
-                        }.into())
-                    }
-                }
+                let ty: Type = ty.into();
+                let arg_ty = ty.into();
+
                 let alloca = LLVMBuildAlloca(self.builder, arg_ty, (name.0.clone() + "\0").as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMGetParam(function, i as u32), alloca);
                 // TODO replace with list logic
@@ -305,6 +249,8 @@ impl CodeGen {
         }
 
         self.functions.insert(name.0, (function_type, ret_val.clone().0, false));
+
+        LLVMPositionBuilderAtEnd(self.builder, orig_bb);
 
         Ok(ret_val)
     }

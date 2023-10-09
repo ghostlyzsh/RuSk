@@ -1,6 +1,6 @@
 use llvm_sys::{prelude::*, core::*, LLVMTypeKind};
 
-use crate::parser::ptr::P;
+use crate::parser::{ptr::P, Type as PType};
 
 #[derive(Clone, Debug)]
 pub enum Type {
@@ -124,6 +124,27 @@ impl From<Type> for LLVMTypeRef {
                 List(inners) => {
                     LLVMPointerType(inners[0].clone().into_inner().into(), 0)
                 }
+            }
+        }
+    }
+}
+impl From<PType> for Type {
+    fn from(ty: PType) -> Self {
+        match ty {
+            PType::Text => {
+                Self::Pointer(P(Self::Char))
+            }
+            PType::Number => {
+                Self::Float
+            }
+            PType::Integer => {
+                Self::Integer
+            }
+            PType::Boolean => {
+                Self::Char
+            }
+            PType::List(ty) => {
+                Self::Pointer(P(ty.into_inner().into()))
             }
         }
     }

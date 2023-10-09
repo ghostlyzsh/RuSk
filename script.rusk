@@ -1,7 +1,7 @@
 native function printf(msg: text, ...) :: int
 
 function thing(arg: int[]):
-    set {index} to 0
+    printf("%d\n\0", {arg})
 
 set {variable} to "Hello world and you too "
 
