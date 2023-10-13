@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use llvm_sys::{prelude::*, core::*, LLVMTypeKind};
 
 use crate::parser::{ptr::P, Type as PType};
@@ -12,6 +14,7 @@ pub enum Type {
     Char,
     List(Vec<P<Type>>),
     Pointer(P<Type>),
+    Struct(String, HashMap<String, (u32, Type)>),
 }
 impl Type {
     pub fn surface_eq(&self, other: &Type) -> bool {
@@ -123,6 +126,10 @@ impl From<Type> for LLVMTypeRef {
                 Pointer(inner) => LLVMPointerType(inner.into_inner().into(), 0),
                 List(inners) => {
                     LLVMPointerType(inners[0].clone().into_inner().into(), 0)
+                }
+                Struct(_name, inner) => {
+                    LLVMStructType(inner.values().map(|t| t.clone().1.into()).collect::<Vec<_>>().as_mut_ptr(),
+                        inner.len() as u32, 0)
                 }
             }
         }

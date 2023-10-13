@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow, Error};
 
 use crate::lexer::tokens::{Tokens, TokenType, Token, TokenError};
@@ -74,6 +76,8 @@ impl Parser {
                     self.add_or_pop_statement()
                 } else if s == "pop" {
                     self.add_or_pop_statement()
+                } else if s == "struct" {
+                    self.struct_statement()
                 } else {
                     self.call_expression()
                 }
@@ -132,6 +136,74 @@ impl Parser {
             }
         }
         Err(anyhow!("Parser Error: function"))
+    }
+    pub fn struct_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "struct" {
+                if let TokenType::Ident(name) = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+                    if let TokenType::LeftParen = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+
+                        let mut fields = Vec::new();
+                        while TokenType::RightParen != self.tokens.peek()?.token_type {
+                            let field = if let TokenType::Ident(field) = self.tokens.read()?.token_type {
+                                field
+                            } else {
+                                return Err(self.error(1005, "Expected field name".to_string(), None, 0, token))
+                            };
+                            self.consume(TokenType::Colon, "Expected \":\" after field name".to_string())?;
+                            
+                            let value = self.statement()?;
+
+                            fields.push((Ident(field), value));
+
+                            if let TokenType::Comma = self.tokens.peek()?.token_type {
+                                self.tokens.read()?;
+                            } else {
+                                self.consume(TokenType::RightParen, "Expected closing parenthesis after struct initialization".to_string())?;
+                                return Ok(Expr { kind: ExprKind::StructInit(Ident(name), fields), line: token.line });
+                            }
+                        }
+                        self.consume(TokenType::RightParen, "Expected closing parenthesis after struct initialization".to_string())?;
+                        return Ok(Expr { kind: ExprKind::StructInit(Ident(name), fields), line: token.line })
+                    }
+                    self.consume(TokenType::Colon, "Expected \":\" in struct declaration".to_string())?;
+                    self.consume(TokenType::Newline, "Expected new line after struct declaration".to_string())?;
+                    self.consume(TokenType::Indent, "Expected indent after struct declaration".to_string())?;
+                    let mut fields = Vec::new();
+                    while let TokenType::Ident(field) = self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+                        self.consume(TokenType::ColonColon, "Expected \"::\" after field name".to_string())?;
+                        let ty = self.match_type()?;
+                        fields.push((Ident(field), ty));
+                        self.consume(TokenType::Newline, "Expected newline after field".to_string())?;
+
+                        if self.tokens.is_at_end() {
+                            break;
+                        }
+                    }
+                    if !self.tokens.is_at_end() {
+                        while let TokenType::Newline = self.tokens.peek()?.token_type {
+                            self.tokens.read()?;
+                            if self.tokens.is_at_end() {
+                                return Ok(Expr {
+                                    kind: ExprKind::Struct(Ident(name), fields),
+                                    line: token.line,
+                                });
+                            }
+                        }
+                        self.consume(TokenType::Dedent, "Expected end of code block".to_string())?;
+                    }
+                    return Ok(Expr {
+                        kind: ExprKind::Struct(Ident(name), fields),
+                        line: token.line,
+                    });
+                }
+            }
+        }
+        Err(anyhow!("Parser Error: struct"))
     }
     pub fn if_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
@@ -850,7 +922,7 @@ impl Parser {
     
     pub fn error(&mut self, code: u32, message: String, help: Option<String>, offset: i32, token: Token) -> Error {
         let add = self.file[token.index as usize..].chars().position(|s| s == '\n').unwrap_or(self.file.len());
-        let line_start = token.index - self.file[..(token.index-1) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
+        let line_start = token.index - self.file[..(token.index) as usize].chars().rev().position(|s| s == '\n').unwrap_or(token.index as usize) as u64;
         let line_end;
         if token.token_type == TokenType::Newline {
             if token.index-1 < line_start {
@@ -903,6 +975,8 @@ pub enum ExprKind {
     While(P<Expr>, P<Block>),
     If(P<Expr>, P<Block>, Option<P<Expr>>),
     Function(Ident, Vec<P<Expr>>, P<Block>, Option<Type>),
+    Struct(Ident, Vec<(Ident, Type)>),
+    StructInit(Ident, Vec<(Ident, Expr)>),
     Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
@@ -961,7 +1035,7 @@ pub enum UnOp {
     Neg,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub struct Ident(pub String);
 

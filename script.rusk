@@ -1,5 +1,9 @@
 native function printf(msg: text, ...) :: int
 
-set {variable} to [2, 4, 6]
+struct addr:
+    first :: int
+    second :: int
+    third :: int
+    fourth :: int
 
-printf("%d\n\0", {variable::0})
+set {var} to struct addr(first: 127, second: 0, third: 0, fourth: 1)

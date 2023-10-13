@@ -17,7 +17,7 @@ pub struct CodeGen {
     opt_passes: LLVMPassManagerRef,
     scopes: Vec<HashMap<String, (LLVMTypeRef, Type, LLVMValueRef)>>, // Name, (LLVMType, Type, Alloc)
     functions: HashMap<String, (LLVMTypeRef, Type, bool)>, // Name, (function_type, ret_type, has_var_args)
-    structs: HashMap<String, LLVMTypeRef>,
+    structs: HashMap<String, (LLVMTypeRef, Type)>,
     pub machine: LLVMTargetMachineRef,
     optimize: bool,
 }
@@ -168,6 +168,12 @@ impl CodeGen {
             ExprKind::Function(name, args, block, ret) => {
                 self.gen_function(name, args, block, ret)
             }
+            ExprKind::Struct(name, fields) => {
+                self.gen_struct(name, fields)
+            }
+            ExprKind::StructInit(name, fields) => {
+                self.gen_struct_init(name, fields, expr.line)
+            }
             /*ExprKind::Return(expr) => {
                 self.gen_return(expr)
             }*/
@@ -261,6 +267,69 @@ impl CodeGen {
             Ok(LLVMBuildRetVoid(self.builder))
         }
     }*/
+    pub unsafe fn gen_struct(&mut self, name: Ident, fields: Vec<(Ident, PType)>) -> Result<(Type, LLVMValueRef)> {
+        let mut v_fields: HashMap<String, (u32, Type)> = HashMap::new();
+        for (i, (ident, ty)) in fields.iter().enumerate() {
+            v_fields.insert(ident.clone().0, (i as u32, Type::from(ty.clone())));
+        }
+        let ty = Type::Struct(name.0.clone(), v_fields.clone());
+        let mut v_types: Vec<LLVMTypeRef> = v_fields.iter().map(|a| {
+            a.1.1.clone().into()
+        }).collect();
+        let llvm_ty = LLVMStructCreateNamed(self.context, name.0.as_ptr() as *const _);
+        LLVMStructSetBody(llvm_ty, v_types.as_mut_ptr(), v_types.len() as u32, 0);
+
+        self.structs.insert(name.0.to_string(), (llvm_ty, ty));
+
+        Ok((Type::Null, LLVMConstNull(LLVMVoidType())))
+    }
+    pub unsafe fn gen_struct_init(&mut self, name: Ident, fields: Vec<(Ident, Expr)>, line: u32) -> Result<(Type, LLVMValueRef)> {
+        let mut v_fields: HashMap<String, (Type, LLVMValueRef)> = HashMap::new();
+        for (ident, expr) in fields {
+            v_fields.insert(ident.0, self.match_expr(expr)?);
+        }
+        let ty = if let Some(t) = self.structs.get(&name.0) { t } else {
+            return Err(CodeGenError {
+                kind: ErrorKind::InvalidType,
+                message: format!("struct \"{}\" not found", name.0),
+                line,
+            }.into())
+        };
+        let fields = if let Type::Struct(_, value) = ty.1.clone() {
+            value
+        } else {
+            panic!("Codegen Error: Struct Init");
+        };
+
+        let mut llvm_fields = vec![LLVMConstNull(LLVMVoidType()); fields.len()];
+        println!("{:?}", ty);
+        for (key, (field_ty, value)) in v_fields {
+            if !fields.contains_key(&key) {
+                return Err(CodeGenError {
+                    kind: ErrorKind::FieldNotFound,
+                    message: format!("field \"{}\" not found", key),
+                    line,
+                }.into())
+            }
+            let field = fields.get(&key).unwrap();
+            if field.1 != field_ty {
+                return Err(CodeGenError {
+                    kind: ErrorKind::MismatchedTypes,
+                    message: format!("field \"{}\" does not match struct type", key),
+                    line,
+                }.into())
+            }
+            llvm_fields[field.0 as usize] = value;
+
+            //let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+            //let field_ptr = LLVMBuildInBoundsGEP2(self.builder, ty.0, Pointer, [zero], 2, "\0".as_ptr() as *const _);
+            //LLVMConstNamedStruct(ty.0, ConstantVals, v_fields.len() as u32);
+        }
+        println!("{}", fields.len());
+        let value = LLVMConstNamedStruct(ty.0, llvm_fields.as_mut_ptr(), llvm_fields.len() as u32);
+
+        Ok((ty.1.clone(), value))
+    }
 
     pub unsafe fn gen_if(&mut self, e_condition: Expr, block: Block, el: Option<P<Expr>>) -> Result<(Type, LLVMValueRef)> {
         let condition = self.match_expr(e_condition.clone())?;
@@ -444,12 +513,15 @@ impl CodeGen {
                 arr_type = LLVMTypeOf(v_array.1[0]);
             }
             let vec_ty = if let Some(s) = self.structs.get(&"Vec".to_string()) {
-                *s
+                s.clone()
             } else {
-                let ty = LLVMStructCreateNamed(self.context, "Vec\0".as_ptr() as *const _);
-                LLVMStructSetBody(ty, [LLVMPointerType(LLVMVoidType(), 0), LLVMInt64TypeInContext(self.context)].as_mut_ptr(), 2, 0);
-                self.structs.insert("Vec".to_string(), ty);
-                ty
+                let llvm_ty = LLVMStructCreateNamed(self.context, "Vec\0".as_ptr() as *const _);
+                LLVMStructSetBody(llvm_ty, [LLVMPointerType(LLVMVoidType(), 0), LLVMInt64TypeInContext(self.context)].as_mut_ptr(), 2, 0);
+                let ty = Type::Struct("Vec".to_string(),
+                        HashMap::from([ ("data".into(), (0, Type::Pointer(P(Type::Null)))), ("len".into(), (1, Type::Integer)) ]));
+                self.structs.insert("Vec".to_string(),
+                    (llvm_ty, ty.clone()));
+                (llvm_ty, ty)
             };
 
             let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
@@ -459,14 +531,14 @@ impl CodeGen {
 
                 let element_type = LLVMGetElementType(alloc.0);
                 let mut indices = [zero, zero];
-                let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, alloc.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
                 let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
 
                 let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
                 LLVMBuildStore(self.builder, value, malloc);
                 return Ok((v_array.0, value));
             }
-            let alloc = LLVMBuildAlloca(self.builder, vec_ty, (variable.name.0.clone() + "\0").as_ptr() as *const _);
+            let alloc = LLVMBuildAlloca(self.builder, vec_ty.0, (variable.name.0.clone() + "\0").as_ptr() as *const _);
             if v_array.1.len() == 0 {
                 self.scopes.last_mut().unwrap().insert(variable.name.0,
                                                        (LLVMArrayType(arr_type, v_array.1.len() as u32), Type::List(vec![P(arr_type.into()); v_array.1.len()]), alloc));
@@ -485,11 +557,11 @@ impl CodeGen {
 
             // get length part of Vec
             let mut indices = [zero, LLVMConstInt(LLVMInt32TypeInContext(self.context), 1, 0)];
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, LLVMConstInt(LLVMInt64Type(), v_array.1.len() as u64, 0), ptr);
             // store pointer to malloc call in Vec
             indices[1] = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, alloc, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             LLVMBuildStore(self.builder, ret, ptr);
             let value = LLVMConstArray(arr_type, v_array.1.as_mut_ptr(), v_array.1.len() as u32);
             LLVMBuildStore(self.builder, value, ret);
@@ -581,8 +653,8 @@ impl CodeGen {
             ty = expr.0;
             value = expr.1;
         }
-        let vec_ty = *if let Some(s) = self.structs.get("Vec") {
-            s
+        let vec_ty = if let Some(s) = self.structs.get("Vec") {
+            s.clone()
         } else {
             return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,
@@ -591,8 +663,8 @@ impl CodeGen {
             }.into())
         };
         
-        let mut first_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec_ty) as usize);
-        LLVMGetStructElementTypes(vec_ty, first_tys.as_mut_ptr());
+        let mut first_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec_ty.0) as usize);
+        LLVMGetStructElementTypes(vec_ty.0, first_tys.as_mut_ptr());
         let mut second_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec.0) as usize);
         LLVMGetStructElementTypes(vec.0, second_tys.as_mut_ptr());
 
@@ -600,8 +672,8 @@ impl CodeGen {
             panic!("Codegen error: add (vec type)");
         }
         let zero = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
-        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, zero].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
-        let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, vec.2, [zero, zero].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+        let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
         let array_ptr = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMVoidType(), 0), s_array_ptr, "\0".as_ptr() as *const _);
         let size = LLVMBuildLoad2(self.builder, LLVMInt64Type(), size_ptr, "\0".as_ptr() as *const _);
 
@@ -750,8 +822,8 @@ impl CodeGen {
                 line,
             }.into())
         }
-        let vec_ty = *if let Some(s) = self.structs.get("Vec") {
-            s
+        let vec_ty = if let Some(s) = self.structs.get("Vec") {
+            s.clone()
         } else {
             return Err(CodeGenError {
                 kind: ErrorKind::NotInScope,
@@ -760,8 +832,8 @@ impl CodeGen {
             }.into())
         };
         
-        let mut first_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec_ty) as usize);
-        LLVMGetStructElementTypes(vec_ty, first_tys.as_mut_ptr());
+        let mut first_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec_ty.0) as usize);
+        LLVMGetStructElementTypes(vec_ty.0, first_tys.as_mut_ptr());
         let mut second_tys = Vec::with_capacity(LLVMCountStructElementTypes(vec.0) as usize);
         LLVMGetStructElementTypes(vec.0, second_tys.as_mut_ptr());
 
@@ -769,8 +841,8 @@ impl CodeGen {
             panic!("Codegen error: add (vec type)");
         }
         let zero = LLVMConstInt(LLVMInt32TypeInContext(self.context), 0, 0);
-        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
-        let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+        let s_array_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, vec.2, [zero].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
+        let size_ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, vec.2, [zero, LLVMConstInt(LLVMInt32Type(), 1, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
         let array_ptr = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMVoidType(), 0), s_array_ptr, "\0".as_ptr() as *const _);
         let size = LLVMBuildLoad2(self.builder, LLVMInt64Type(), size_ptr, "\0".as_ptr() as *const _);
 
@@ -928,12 +1000,12 @@ impl CodeGen {
             //let mut indices = [index, LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0)];
             let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
             let mut indices = [zero, zero];
-            let vec_ty = *if let Some(s) = self.structs.get("Vec") {
+            let vec_ty = if let Some(s) = self.structs.get("Vec") {
                 s
             } else {
                 panic!("Codegen error: Vec struct not created");
-            };
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            }.clone();
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
             let mut indices = [index.1];
             let ptr = LLVMBuildInBoundsGEP2(self.builder, element_type, malloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
@@ -942,13 +1014,13 @@ impl CodeGen {
             Ok((var.1.get_element(), load))
         } else if let Type::Text(_) = var.1 {
             let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
-            let vec_ty = *if let Some(s) = self.structs.get("Vec") {
+            let vec_ty = if let Some(s) = self.structs.get("Vec") {
                 s
             } else {
                 panic!("Codegen error: Vec struct not created");
-            };
+            }.clone();
             let mut indices = [zero, zero];
-            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+            let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             let load = LLVMBuildLoad2(self.builder, LLVMPointerType(LLVMInt8Type(), 0), ptr, "\0".as_ptr() as *const _);
             Ok((var.1.clone(), load))
         } else {
