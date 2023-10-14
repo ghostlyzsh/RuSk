@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::parser::{ptr::P, Expr, ExprKind, BinOp, Literal, Variable, Block, Ident, Type as PType};
 use anyhow::{Result, anyhow};
-use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass}, util::LLVMAddPromoteMemoryToRegisterPass}, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
+use llvm_sys::{prelude::*, core::*, transforms::{scalar::{LLVMAddReassociatePass, LLVMAddGVNPass, LLVMAddCFGSimplificationPass, LLVMAddTailCallEliminationPass, LLVMAddInstructionCombiningPass, LLVMAddDCEPass, LLVMAddDeadStoreEliminationPass}, util::LLVMAddPromoteMemoryToRegisterPass}, target::*, target_machine::{LLVMGetDefaultTargetTriple, LLVMGetTargetFromTriple, LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMCodeModel, LLVMRelocMode, LLVMCodeGenOptLevel, LLVMTargetRef, LLVMGetFirstTarget, LLVMTargetMachineRef, LLVMGetHostCPUFeatures}};
 
 use self::error::{CodeGenError, ErrorKind};
 use ty::*;
@@ -56,7 +56,9 @@ impl CodeGen {
         LLVMAddTailCallEliminationPass(opt_passes);
         
         LLVMAddPromoteMemoryToRegisterPass(opt_passes);
-        //LLVMAddInstructionCombiningPass(opt_passes);
+        LLVMAddInstructionCombiningPass(opt_passes);
+        LLVMAddDCEPass(opt_passes);
+        LLVMAddDeadStoreEliminationPass(opt_passes);
         LLVMAddReassociatePass(opt_passes);
         LLVMAddGVNPass(opt_passes);
         LLVMAddCFGSimplificationPass(opt_passes);
@@ -302,7 +304,6 @@ impl CodeGen {
         };
 
         let mut llvm_fields = vec![LLVMConstNull(LLVMVoidType()); fields.len()];
-        println!("{:?}", ty);
         for (key, (field_ty, value)) in v_fields {
             if !fields.contains_key(&key) {
                 return Err(CodeGenError {
@@ -325,7 +326,6 @@ impl CodeGen {
             //let field_ptr = LLVMBuildInBoundsGEP2(self.builder, ty.0, Pointer, [zero], 2, "\0".as_ptr() as *const _);
             //LLVMConstNamedStruct(ty.0, ConstantVals, v_fields.len() as u32);
         }
-        println!("{}", fields.len());
         let value = LLVMConstNamedStruct(ty.0, llvm_fields.as_mut_ptr(), llvm_fields.len() as u32);
 
         Ok((ty.1.clone(), value))
@@ -587,6 +587,34 @@ impl CodeGen {
         if scope.get(&variable.name.0).is_some() {
             let alloc = scope.get(&variable.name.0).unwrap();
             if let Some(index) = variable.index {
+                if let ExprKind::Ident(i) = index.clone().into_inner().kind {
+                    if let Type::Struct(name, fields) = alloc.1.clone() {
+                        let field = i.0;
+                        let index = if let Some(v) = fields.get(&field) {
+                            v
+                        } else {
+                            return Err(CodeGenError {
+                                kind: ErrorKind::FieldNotFound,
+                                message: format!("Field \"{}\" not found in struct {}", field, name),
+                                line: eval.line,
+                            }.into())
+                        };
+                        let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                        let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, [zero, LLVMConstInt(LLVMInt32Type(), index.0 as u64, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                        let mut types = Vec::with_capacity(fields.len());
+                        LLVMGetStructElementTypes(alloc.0, types.as_mut_ptr());
+                        types.set_len(fields.len());
+                        let value = LLVMBuildStore(self.builder, value, ptr); 
+                        return Ok((index.1.clone(), value))
+                    } else {
+                        return Err(CodeGenError {
+                            kind: ErrorKind::MismatchedTypes,
+                            message: "Exprected struct type to set a field".to_string(),
+                            line: eval.line,
+                        }.into())
+                    }
+                }
+
                 let index = self.match_expr(index.into_inner())?;
                 let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), index.1];
                 let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
@@ -646,13 +674,13 @@ impl CodeGen {
                 line: e_value.line,
             }.into())
         }
-        if let ExprKind::Array(_array) = e_value.kind {
-            todo!();
-        } else {
+        //if let ExprKind::Array(_array) = e_value.kind {
+        //    todo!();
+        //} else {
             let expr = self.match_expr(e_value.clone())?;
             ty = expr.0;
             value = expr.1;
-        }
+        //}
         let vec_ty = if let Some(s) = self.structs.get("Vec") {
             s.clone()
         } else {
@@ -995,10 +1023,37 @@ impl CodeGen {
         }
 
         if let Some(index) = variable.index {
+            let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+            if let ExprKind::Ident(i) = index.clone().into_inner().kind {
+                if let Type::Struct(name, fields) = var.1.clone() {
+                    let field = i.0;
+                    let index = if let Some(v) = fields.get(&field) {
+                        v
+                    } else {
+                        return Err(CodeGenError {
+                            kind: ErrorKind::FieldNotFound,
+                            message: format!("Field \"{}\" not found in struct {}", field, name),
+                            line,
+                        }.into())
+                    };
+                    let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, var.2, [zero, LLVMConstInt(LLVMInt32Type(), index.0 as u64, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
+                    let mut types = Vec::with_capacity(fields.len());
+                    LLVMGetStructElementTypes(var.0, types.as_mut_ptr());
+                    types.set_len(fields.len());
+                    let value = LLVMBuildLoad2(self.builder, types[index.0 as usize], ptr, "\0".as_ptr() as *const _);
+                    return Ok((index.1.clone(), value))
+                } else {
+                    return Err(CodeGenError {
+                        kind: ErrorKind::MismatchedTypes,
+                        message: "Exprected struct type".to_string(),
+                        line,
+                    }.into())
+                }
+            }
+
             let index = self.match_expr(index.into_inner())?;
             let element_type = LLVMGetElementType(var.0);
             //let mut indices = [index, LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0)];
-            let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
             let mut indices = [zero, zero];
             let vec_ty = if let Some(s) = self.structs.get("Vec") {
                 s
@@ -1267,7 +1322,6 @@ impl CodeGen {
             array_values.push(value.1);
         }
 
-        println!("{}", array_values.len());
         Ok((Type::List(vec![P(first); array_values.len()]), array_values))
     }
     pub unsafe fn process_text(&mut self, text: String) -> Result<(Type, Vec<LLVMValueRef>)> {
@@ -1282,6 +1336,7 @@ impl CodeGen {
     pub unsafe fn gen_lit(&mut self, lit: Literal) -> Result<(Type, LLVMValueRef)> {
         match lit {
             Literal::Text(text) => {
+                // make it so two strings of same value doesnt make two global pointers
                 Ok((Type::Text(text.len() as u32), LLVMBuildGlobalStringPtr(self.builder, (text + "\0").as_ptr() as *const _, "\0".as_ptr() as *const _)))
             }
             Literal::Number(num) => {
