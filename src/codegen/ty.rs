@@ -15,6 +15,9 @@ pub enum Type {
     List(Vec<P<Type>>),
     Pointer(P<Type>),
     Struct(String, HashMap<String, (u32, Type)>),
+    // internal
+    I32,
+    I1,
 }
 impl Type {
     pub fn surface_eq(&self, other: &Type) -> bool {
@@ -132,6 +135,8 @@ impl From<Type> for LLVMTypeRef {
                     LLVMStructType(inner.values().map(|t| t.clone().1.into()).collect::<Vec<_>>().as_mut_ptr(),
                         inner.len() as u32, 0)
                 }
+                I32 => LLVMInt32Type(),
+                I1 => LLVMInt1Type(),
             }
         }
     }
@@ -152,6 +157,9 @@ impl From<PType> for Type {
                 Self::Char
             }
             PType::List(ty) => {
+                Self::Pointer(P(ty.into_inner().into()))
+            }
+            PType::Pointer(ty) => {
                 Self::Pointer(P(ty.into_inner().into()))
             }
             PType::Struct(name) => {

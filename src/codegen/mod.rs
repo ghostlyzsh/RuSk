@@ -16,8 +16,8 @@ pub struct CodeGen {
     builder: LLVMBuilderRef,
     opt_passes: LLVMPassManagerRef,
     scopes: Vec<HashMap<String, (LLVMTypeRef, Type, LLVMValueRef)>>, // Name, (LLVMType, Type, Alloc)
-    functions: HashMap<String, (LLVMTypeRef, Type, bool)>, // Name, (function_type, ret_type, has_var_args)
-    structs: HashMap<String, (LLVMTypeRef, Type)>,
+    functions: HashMap<String, (LLVMTypeRef, Vec<Type>, Type, bool)>, // Name, (function_type, ret_type, has_var_args)
+    structs: HashMap<String, (LLVMTypeRef, Type)>, // Name, (llvm_struct_type, struct_type)
     pub machine: LLVMTargetMachineRef,
     optimize: bool,
 }
@@ -191,9 +191,11 @@ impl CodeGen {
 
     pub unsafe fn gen_function(&mut self, name: Ident, args: Vec<P<Expr>>, block: P<Block>, ret: Option<PType>) -> Result<(Type, LLVMValueRef)> {
         let mut f_args = Vec::with_capacity(args.len());
+        let mut t_args = Vec::with_capacity(args.len());
         for arg in args.clone() {
             if let ExprKind::Arg(_name, ty) = arg.kind.clone() {
                 let ty: Type = ty.into();
+                t_args.push(ty.clone());
                 f_args.push(ty.into());
             } else {
                 return Err(CodeGenError {
@@ -256,7 +258,7 @@ impl CodeGen {
             LLVMRunFunctionPassManager(self.opt_passes, function);
         }
 
-        self.functions.insert(name.0, (function_type, ret_val.clone().0, false));
+        self.functions.insert(name.0, (function_type, t_args, ret_val.clone().0, false));
 
         LLVMPositionBuilderAtEnd(self.builder, orig_bb);
 
@@ -559,7 +561,7 @@ impl CodeGen {
                 return Ok((v_array.0, alloc));
             }
 
-            let (malloc_ty, malloc) = self.get_or_create_function("malloc".to_string(), vec![LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            let (malloc_ty, malloc) = self.get_or_create_function("malloc".to_string(), vec![Type::Integer], LLVMPointerType(LLVMVoidType(), 0));
 
             // call malloc
             let malloc_amount = if v_array.0.get_element() == Type::Char {
@@ -610,7 +612,7 @@ impl CodeGen {
                         let mut v_fields = fields.clone();
                         let mut next_type = alloc.1.clone();
                         let mut last_i = 0;
-                        for (i, index) in indices.iter().enumerate() {
+                        for (i, _index) in indices.iter().enumerate() {
                             if next_type.surface_eq(&Type::Struct(name.clone(), fields.clone())) {
                                 let v_index = if let Some(v) = v_fields.get(&field) {
                                     v
@@ -640,20 +642,7 @@ impl CodeGen {
                             let value = fields.iter().find(|(_, (i, _))| *i == last_i).unwrap();
                             ty = value.1.1.clone();
                         }
-                        println!("{:?}", v_indices);
-                        /*let index = if let Some(v) = v_fields.get(&field) {
-                            v
-                        } else {
-                            return Err(CodeGenError {
-                                kind: ErrorKind::FieldNotFound,
-                                message: format!("Field \"{}\" not found in struct {}", field, name),
-                                line: eval.line,
-                            }.into())
-                        };*/
                         let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, v_indices.as_mut_ptr(), v_indices.len() as u32, "\0".as_ptr() as *const _);
-                        /*let mut types = Vec::with_capacity(v_fields.len());
-                        LLVMGetStructElementTypes(alloc.0, types.as_mut_ptr());
-                        types.set_len(v_fields.len());*/
                         let value = LLVMBuildStore(self.builder, value, ptr); 
                         return Ok((ty, value))
                     } else {
@@ -676,7 +665,7 @@ impl CodeGen {
         if let Some(_) = variable.index {
             return Err(CodeGenError {
                 kind: ErrorKind::Null,
-                message: "Cannot set index of uninitialized list".to_string(),
+                message: "Cannot set field of a variable that does not exist".to_string(),
                 line: eval.line,
             }.into())
         }
@@ -756,11 +745,10 @@ impl CodeGen {
         let size = LLVMBuildLoad2(self.builder, LLVMInt64Type(), size_ptr, "\0".as_ptr() as *const _);
 
         // add to array 
-        let void_ptr = LLVMPointerType(LLVMVoidTypeInContext(self.context), 0);
         let (alloc_ty, alloc);
         if vec.1 == Type::List(vec![]) {
             // add to empty array
-            (alloc_ty, alloc) = self.get_or_create_function("malloc".to_string(), vec![LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            (alloc_ty, alloc) = self.get_or_create_function("malloc".to_string(), vec![Type::Integer], LLVMPointerType(LLVMVoidType(), 0));
             let eight = LLVMConstInt(LLVMInt64Type(), 8, 0);
             let one = LLVMConstInt(LLVMInt64Type(), 1, 0);
             let ptr = LLVMBuildCall2(self.builder, alloc_ty, alloc, [eight].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
@@ -794,7 +782,7 @@ impl CodeGen {
                 return e;
             }
         } else if let Type::List(_) = vec.1 {
-            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![Type::Pointer(P(Type::Null)), Type::Integer], LLVMPointerType(LLVMVoidType(), 0));
 
             // type check
             if !vec.1.element_eq(&ty) {
@@ -829,7 +817,7 @@ impl CodeGen {
                 }
             });
         } else {
-            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![Type::Pointer(P(Type::Null)), Type::Integer], LLVMPointerType(LLVMVoidType(), 0));
 
             if !vec.1.surface_eq(&ty) {
                 return Err(CodeGenError {
@@ -850,7 +838,7 @@ impl CodeGen {
             LLVMBuildStore(self.builder, new_ptr, s_array_ptr);
 
             let (memcpy_ty, memcpy) = self.get_or_create_function("llvm.memcpy.p0.p0.i32".to_string(),
-                vec![void_ptr, void_ptr, LLVMInt32Type(), LLVMInt1Type()], LLVMVoidType());
+                vec![Type::Pointer(P(Type::Null)), Type::Pointer(P(Type::Null)), Type::I32, Type::I1], LLVMVoidType());
 
             let cpy_ptr = LLVMBuildGEP2(self.builder, LLVMInt8Type(), new_ptr, [size].as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             LLVMBuildCall2(self.builder, memcpy_ty, memcpy, [cpy_ptr, value, LLVMConstInt(LLVMInt32Type(), other_len as u64, 0), LLVMConstInt(LLVMInt1Type(), 0, 0)].as_mut_ptr(), 4, "\0".as_ptr() as *const _);
@@ -927,7 +915,6 @@ impl CodeGen {
         // add to array 
         // set last index to value
 
-        let void_ptr = LLVMPointerType(LLVMVoidTypeInContext(self.context), 0);
         let (alloc_ty, alloc);
         if vec.1 == Type::List(vec![]) {
             return Err(CodeGenError {
@@ -936,7 +923,7 @@ impl CodeGen {
                 line,
             }.into());
         } else {
-            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![void_ptr, LLVMInt64TypeInContext(self.context)], LLVMPointerType(LLVMVoidType(), 0));
+            (alloc_ty, alloc) = self.get_or_create_function("realloc".to_string(), vec![Type::Pointer(P(Type::Null)), Type::Integer], LLVMPointerType(LLVMVoidType(), 0));
             // add to list
             let last_index = LLVMBuildNSWSub(self.builder, size, LLVMConstInt(LLVMInt64Type(), 1, 0), "\0".as_ptr() as *const _);
             let new_size = if vec.1.element_eq(&Type::Char) {
@@ -969,32 +956,14 @@ impl CodeGen {
     }
 
     pub unsafe fn gen_native(&mut self, name: Ident, args: Vec<P<Expr>>, var: bool, ret: Option<P<Expr>>) -> Result<(Type, LLVMValueRef)> {
-        let mut args_type = Vec::new();
+        let mut args_type = Vec::with_capacity(args.len());
+        let mut t_args = Vec::with_capacity(args.len());
         for arg in args.clone() {
             let arg = arg.into_inner();
             if let ExprKind::Arg(ident, t) = arg.kind {
-                let tt;
-                match t {
-                    PType::Text => {
-                        tt = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-                    }
-                    PType::Number => {
-                        tt = LLVMFloatType();
-                    }
-                    PType::Integer => {
-                        tt = LLVMInt64Type();
-                    }
-                    PType::Boolean => {
-                        tt = LLVMInt1Type();
-                    }
-                    _ => { // add array functionality later
-                        return Err(CodeGenError {
-                            kind: ErrorKind::InvalidArgs,
-                            message: "Codegen error: function arg".to_string(),
-                            line: args[0].line,
-                        }.into())
-                    }
-                }
+                let tt = Type::from(t);
+                t_args.push(tt.clone());
+                let tt = tt.into();
                 args_type.push((ident.0, tt));
             } else {
                 return Err(CodeGenError {
@@ -1008,27 +977,7 @@ impl CodeGen {
         if let Some(ret) = ret {
             let ret = ret.into_inner();
             if let ExprKind::Type(t) = ret.kind {
-                match t {
-                    PType::Text => {
-                        ret_type = LLVMPointerType(LLVMInt8TypeInContext(self.context), 0);
-                    }
-                    PType::Number => {
-                        ret_type = LLVMFloatType();
-                    }
-                    PType::Integer => {
-                        ret_type = LLVMInt64Type();
-                    }
-                    PType::Boolean => {
-                        ret_type = LLVMInt1Type();
-                    }
-                    _ => { // add array functionality later
-                        return Err(CodeGenError {
-                            kind: ErrorKind::InvalidArgs,
-                            message: "Codegen error: function arg".to_string(),
-                            line: args[0].line,
-                        }.into())
-                    }
-                }
+                ret_type = Type::from(t).into();
             } else {
                 return Err(CodeGenError {
                     kind: ErrorKind::Invalid,
@@ -1040,7 +989,7 @@ impl CodeGen {
         let function_type = LLVMFunctionType(ret_type, args_type.iter().map(|v| v.1).collect::<Vec<_>>().as_mut_ptr(), args_type.len() as u32, var as i32);
 
         LLVMAddFunction(self.module, (name.0.clone() + "\0").as_ptr() as *const _, function_type);
-        self.functions.insert(name.0, (function_type, Type::from(ret_type), var));
+        self.functions.insert(name.0, (function_type, t_args, Type::from(ret_type), var));
 
         Ok((Type::Null, LLVMConstNull(LLVMVoidType())))
     }
@@ -1083,7 +1032,7 @@ impl CodeGen {
                     let mut v_fields = fields.clone();
                     let mut next_type = var.1.clone();
                     let mut last_i = 0;
-                    for (i, index) in indices.iter().enumerate() {
+                    for (i, _index) in indices.iter().enumerate() {
                         if next_type.surface_eq(&Type::Struct(name.clone(), fields.clone())) {
                             let v_index = if let Some(v) = v_fields.get(&field) {
                                 v
@@ -1184,10 +1133,8 @@ impl CodeGen {
                 line,
             }.into())
         }
-        let param_num = LLVMCountParamTypes(function_type.0);
-
-        let mut arg_types = Vec::with_capacity(param_num as usize);
-        if !function_type.2 {
+        //let mut arg_types = Vec::with_capacity(param_num as usize);
+        /*if !function_type.3 {
             if param_num != args.len() as u32 {
                 return Err(CodeGenError {
                     kind: ErrorKind::InvalidArgs,
@@ -1198,12 +1145,12 @@ impl CodeGen {
 
             LLVMGetParamTypes(function_type.0, arg_types.as_mut_ptr());
             arg_types.set_len(param_num as usize);
-        }
+        }*/
 
         let mut argsV = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let arg = arg.clone().into_inner();
-            let mut arg = self.match_expr(arg.clone())?; // hang
+            let mut arg = self.match_expr(arg.clone())?;
             if arg.1.is_null() {
                 return Err(CodeGenError {
                     kind: ErrorKind::Null,
@@ -1211,7 +1158,7 @@ impl CodeGen {
                     line,
                 }.into())
             }
-            if !function_type.2 {
+            if !function_type.3 {
                 if let Type::List(ref _inner) = arg.0 {
                     let element_type = LLVMGetElementType(LLVMTypeOf(arg.1));
                     //let num_indices = LLVMGetArrayLength(LLVMTypeOf(arg));
@@ -1219,7 +1166,7 @@ impl CodeGen {
                     arg.1 = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg.1, &mut int, 0, "\0".as_ptr() as *const _);
                 }
 
-                if LLVMTypeOf(arg.1) != arg_types[i] {
+                if arg.0 != function_type.1[i] {
                     return Err(CodeGenError {
                         kind: ErrorKind::MismatchedTypes,
                         message: format!("Argument {} has wrong type", i),
@@ -1233,7 +1180,7 @@ impl CodeGen {
         let mut argsV: Vec<LLVMValueRef> = argsV.iter().map(|(_, v)| { *v }).collect();
         let ret = LLVMBuildCall2(self.builder, function_type.0, function,
             argsV.as_mut_ptr(), argsV.len() as u32, "\0".as_ptr() as *const _);
-        Ok((function_type.1, ret))
+        Ok((function_type.2, ret))
     }
     
     pub unsafe fn gen_binary(&mut self, binop: BinOp, e_lhs: Expr, e_rhs: Expr) -> Result<(Type, LLVMValueRef)> {
@@ -1433,13 +1380,14 @@ impl CodeGen {
         }
     }
 
-    pub unsafe fn get_or_create_function(&mut self, name: String, mut args: Vec<LLVMTypeRef>, ret: LLVMTypeRef) -> (LLVMTypeRef, LLVMValueRef) {
+    pub unsafe fn get_or_create_function(&mut self, name: String, args: Vec<Type>, ret: LLVMTypeRef) -> (LLVMTypeRef, LLVMValueRef) {
         let mut function = LLVMGetNamedFunction(self.module, (name.clone() + "\0").as_ptr() as *const _);
+        let mut l_args: Vec<LLVMTypeRef> = args.iter().map(|s| LLVMTypeRef::from(s.clone())).collect();
         let function_ty = LLVMFunctionType(ret,
-                                         args.as_mut_ptr(), args.len() as u32, 0);
+                                         l_args.as_mut_ptr(), args.len() as u32, 0);
         if function.is_null() {
             function = LLVMAddFunction(self.module, (name.clone() + "\0").as_ptr() as *const _, function_ty);
-            self.functions.insert(name, (function_ty, ret.into(), false));
+            self.functions.insert(name, (function_ty, args, ret.into(), false));
         }
         (function_ty, function)
     }

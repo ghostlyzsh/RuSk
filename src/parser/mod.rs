@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{Result, anyhow, Error};
 
 use crate::lexer::tokens::{Tokens, TokenType, Token, TokenError};
@@ -421,7 +419,7 @@ impl Parser {
     pub fn match_type(&mut self) -> Result<Type> {
         if let TokenType::Ident(ident) = self.tokens.peek()?.token_type {
             let _token = self.tokens.read()?;
-            let tt;
+            let mut tt;
             match ident.as_str() {
                 "text" => {
                     tt = Type::Text;
@@ -444,6 +442,14 @@ impl Parser {
                 t => {
                     //return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
                     tt = Type::Struct(Ident(t.to_string()));
+                }
+            }
+            if !self.tokens.is_at_end() {
+                if let TokenType::Ident(ident) = self.tokens.peek()?.token_type {
+                    if ident.as_str() == "pointer" {
+                        self.tokens.read()?;
+                        tt = Type::Pointer(P(tt));
+                    }
                 }
             }
             Ok(tt)
@@ -1065,6 +1071,7 @@ pub enum Type {
     Integer,
     Boolean,
     List(P<Type>),
+    Pointer(P<Type>),
     Struct(Ident),
 }
 
