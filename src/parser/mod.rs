@@ -420,7 +420,7 @@ impl Parser {
     }
     pub fn match_type(&mut self) -> Result<Type> {
         if let TokenType::Ident(ident) = self.tokens.peek()?.token_type {
-            let token = self.tokens.read()?;
+            let _token = self.tokens.read()?;
             let tt;
             match ident.as_str() {
                 "text" => {
@@ -442,7 +442,8 @@ impl Parser {
                     tt = Type::Boolean;
                 }
                 t => {
-                    return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
+                    //return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
+                    tt = Type::Struct(Ident(t.to_string()));
                 }
             }
             Ok(tt)
@@ -554,20 +555,29 @@ impl Parser {
         };
         let ident = self.tokens.read()?;
         if let TokenType::Ident(name) = ident.token_type {
-            if let TokenType::ColonColon = self.tokens.peek()?.token_type {
+            let mut indices = Vec::new();
+            while let TokenType::ColonColon = self.tokens.peek()?.token_type {
                 self.tokens.read()?;
                 let expr = self.expression()?;
-                self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
-                Ok(Variable {
+                indices.push(expr)
+                //self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                /*return Ok(Variable {
                     name: Ident(name),
                     index: Some(P(expr)),
                     visibility,
-                })
-            } else {
-                self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+                })*/
+            }
+            self.consume(TokenType::RightBrace, "Expected right brace after name".to_string())?;
+            if indices.len() == 0 {
                 Ok(Variable {
                     name: Ident(name),
                     index: None,
+                    visibility,
+                })
+            } else {
+                Ok(Variable {
+                    name: Ident(name),
+                    index: Some(indices),
                     visibility,
                 })
             }
@@ -1055,13 +1065,14 @@ pub enum Type {
     Integer,
     Boolean,
     List(P<Type>),
+    Struct(Ident),
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Variable {
     pub name: Ident,
-    pub index: Option<P<Expr>>,
+    pub index: Option<Vec<Expr>>,
     pub visibility: VisibilityMode,
 }
 

@@ -28,6 +28,7 @@ impl Type {
             (Text(_), Text(_)) => true,
             (List(_), List(_)) => true,
             (Pointer(_), Pointer(_)) => true,
+            (Struct(_, _), Struct(_, _)) => true,
             _ => false,
         }
     }
@@ -152,6 +153,9 @@ impl From<PType> for Type {
             }
             PType::List(ty) => {
                 Self::Pointer(P(ty.into_inner().into()))
+            }
+            PType::Struct(name) => {
+                Self::Struct(name.0, HashMap::new())
             }
         }
     }

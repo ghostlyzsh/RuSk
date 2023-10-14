@@ -171,7 +171,7 @@ impl CodeGen {
                 self.gen_function(name, args, block, ret)
             }
             ExprKind::Struct(name, fields) => {
-                self.gen_struct(name, fields)
+                self.gen_struct(name, fields, expr.line)
             }
             ExprKind::StructInit(name, fields) => {
                 self.gen_struct_init(name, fields, expr.line)
@@ -269,15 +269,29 @@ impl CodeGen {
             Ok(LLVMBuildRetVoid(self.builder))
         }
     }*/
-    pub unsafe fn gen_struct(&mut self, name: Ident, fields: Vec<(Ident, PType)>) -> Result<(Type, LLVMValueRef)> {
+    pub unsafe fn gen_struct(&mut self, name: Ident, fields: Vec<(Ident, PType)>, line: u32) -> Result<(Type, LLVMValueRef)> {
         let mut v_fields: HashMap<String, (u32, Type)> = HashMap::new();
+        let mut v_types: Vec<LLVMTypeRef> = Vec::with_capacity(fields.len());
         for (i, (ident, ty)) in fields.iter().enumerate() {
-            v_fields.insert(ident.clone().0, (i as u32, Type::from(ty.clone())));
+            if let PType::Struct(name) = ty {
+                let ty = if let Some(t) = self.structs.get(&name.0) {
+                    t.1.clone()
+                } else {
+                    return Err(CodeGenError {
+                        kind: ErrorKind::InvalidType,
+                        message: format!("struct \"{}\" not found", name.0),
+                        line,
+                    }.into())
+                };
+                v_fields.insert(ident.clone().0, (i as u32, ty.clone()));
+                v_types.push(ty.into());
+            } else {
+                v_fields.insert(ident.clone().0, (i as u32, Type::from(ty.clone())));
+                v_types.push(Type::from(ty.clone()).into());
+            }
         }
+
         let ty = Type::Struct(name.0.clone(), v_fields.clone());
-        let mut v_types: Vec<LLVMTypeRef> = v_fields.iter().map(|a| {
-            a.1.1.clone().into()
-        }).collect();
         let llvm_ty = LLVMStructCreateNamed(self.context, name.0.as_ptr() as *const _);
         LLVMStructSetBody(llvm_ty, v_types.as_mut_ptr(), v_types.len() as u32, 0);
 
@@ -313,7 +327,7 @@ impl CodeGen {
                 }.into())
             }
             let field = fields.get(&key).unwrap();
-            if field.1 != field_ty {
+            if !field.1.surface_eq(&field_ty) {
                 return Err(CodeGenError {
                     kind: ErrorKind::MismatchedTypes,
                     message: format!("field \"{}\" does not match struct type", key),
@@ -586,11 +600,48 @@ impl CodeGen {
 
         if scope.get(&variable.name.0).is_some() {
             let alloc = scope.get(&variable.name.0).unwrap();
-            if let Some(index) = variable.index {
-                if let ExprKind::Ident(i) = index.clone().into_inner().kind {
+            if let Some(indices) = variable.index {
+                if let ExprKind::Ident(i) = indices[0].clone().kind {
                     if let Type::Struct(name, fields) = alloc.1.clone() {
-                        let field = i.0;
-                        let index = if let Some(v) = fields.get(&field) {
+                        let mut field = i.0;
+                        let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                        let mut v_indices = Vec::with_capacity(indices.len());
+                        v_indices.push(zero);
+                        let mut v_fields = fields.clone();
+                        let mut next_type = alloc.1.clone();
+                        let mut last_i = 0;
+                        for (i, index) in indices.iter().enumerate() {
+                            if next_type.surface_eq(&Type::Struct(name.clone(), fields.clone())) {
+                                let v_index = if let Some(v) = v_fields.get(&field) {
+                                    v
+                                } else {
+                                    return Err(CodeGenError {
+                                        kind: ErrorKind::FieldNotFound,
+                                        message: format!("Field \"{}\" not found in struct {}", field, name),
+                                        line: eval.line,
+                                    }.into())
+                                };
+                                println!("{}", field);
+                                v_indices.push(LLVMConstInt(LLVMInt32Type(), v_index.0 as u64, 0));
+                                last_i = v_index.0;
+                                if let Type::Struct(name, fields) = &v_index.1 {
+                                    if i < indices.len()-1 {
+                                        if let ExprKind::Ident(i) = &indices[i+1].kind {
+                                            field = i.0.clone();
+                                        }
+                                    }
+                                    next_type = Type::Struct(name.clone(), fields.clone()); 
+                                    v_fields = fields.clone();
+                                }
+                            }
+                        }
+                        let mut ty = next_type.clone();
+                        if let Type::Struct(_, fields) = next_type {
+                            let value = fields.iter().find(|(_, (i, _))| *i == last_i).unwrap();
+                            ty = value.1.1.clone();
+                        }
+                        println!("{:?}", v_indices);
+                        /*let index = if let Some(v) = v_fields.get(&field) {
                             v
                         } else {
                             return Err(CodeGenError {
@@ -598,14 +649,13 @@ impl CodeGen {
                                 message: format!("Field \"{}\" not found in struct {}", field, name),
                                 line: eval.line,
                             }.into())
-                        };
-                        let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
-                        let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, [zero, LLVMConstInt(LLVMInt32Type(), index.0 as u64, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
-                        let mut types = Vec::with_capacity(fields.len());
+                        };*/
+                        let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, v_indices.as_mut_ptr(), v_indices.len() as u32, "\0".as_ptr() as *const _);
+                        /*let mut types = Vec::with_capacity(v_fields.len());
                         LLVMGetStructElementTypes(alloc.0, types.as_mut_ptr());
-                        types.set_len(fields.len());
+                        types.set_len(v_fields.len());*/
                         let value = LLVMBuildStore(self.builder, value, ptr); 
-                        return Ok((index.1.clone(), value))
+                        return Ok((ty, value))
                     } else {
                         return Err(CodeGenError {
                             kind: ErrorKind::MismatchedTypes,
@@ -615,7 +665,7 @@ impl CodeGen {
                     }
                 }
 
-                let index = self.match_expr(index.into_inner())?;
+                let index = self.match_expr(indices[0].clone())?;
                 let mut indices = [LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0), index.1];
                 let ptr = LLVMBuildInBoundsGEP2(self.builder, alloc.0, alloc.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
                 return Ok((ty, LLVMBuildStore(self.builder, value, ptr)))
@@ -1022,36 +1072,68 @@ impl CodeGen {
             }.into())
         }
 
-        if let Some(index) = variable.index {
+        if let Some(indices) = variable.index {
             let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
-            if let ExprKind::Ident(i) = index.clone().into_inner().kind {
+            if let ExprKind::Ident(i) = indices[0].clone().kind {
                 if let Type::Struct(name, fields) = var.1.clone() {
-                    let field = i.0;
-                    let index = if let Some(v) = fields.get(&field) {
-                        v
-                    } else {
-                        return Err(CodeGenError {
-                            kind: ErrorKind::FieldNotFound,
-                            message: format!("Field \"{}\" not found in struct {}", field, name),
-                            line,
-                        }.into())
-                    };
-                    let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, var.2, [zero, LLVMConstInt(LLVMInt32Type(), index.0 as u64, 0)].as_mut_ptr(), 2, "\0".as_ptr() as *const _);
-                    let mut types = Vec::with_capacity(fields.len());
-                    LLVMGetStructElementTypes(var.0, types.as_mut_ptr());
-                    types.set_len(fields.len());
-                    let value = LLVMBuildLoad2(self.builder, types[index.0 as usize], ptr, "\0".as_ptr() as *const _);
-                    return Ok((index.1.clone(), value))
+                    let mut field = i.0;
+                    let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                    let mut v_indices = Vec::with_capacity(indices.len());
+                    v_indices.push(zero);
+                    let mut v_fields = fields.clone();
+                    let mut next_type = var.1.clone();
+                    let mut last_i = 0;
+                    for (i, index) in indices.iter().enumerate() {
+                        if next_type.surface_eq(&Type::Struct(name.clone(), fields.clone())) {
+                            let v_index = if let Some(v) = v_fields.get(&field) {
+                                v
+                            } else {
+                                return Err(CodeGenError {
+                                    kind: ErrorKind::FieldNotFound,
+                                    message: format!("Field \"{}\" not found in struct {}", field, name),
+                                    line,
+                                }.into())
+                            };
+                            println!("{}", field);
+                            v_indices.push(LLVMConstInt(LLVMInt32Type(), v_index.0 as u64, 0));
+                            last_i = v_index.0;
+                            if let Type::Struct(name, fields) = &v_index.1 {
+                                if i < indices.len()-1 {
+                                    if let ExprKind::Ident(i) = &indices[i+1].kind {
+                                        field = i.0.clone();
+                                    }
+                                }
+                                next_type = Type::Struct(name.clone(), fields.clone()); 
+                                v_fields = fields.clone();
+                            }
+                        }
+                    }
+                    let mut ty = next_type.clone();
+                    if let Type::Struct(_, fields) = next_type {
+                        let value = fields.iter().find(|(_, (i, _))| *i == last_i).unwrap();
+                        ty = value.1.1.clone();
+                    }
+                    println!("{:?}", v_indices);
+                    let ptr = LLVMBuildInBoundsGEP2(self.builder, var.0, var.2, v_indices.as_mut_ptr(), v_indices.len() as u32, "\0".as_ptr() as *const _);
+                    /*let mut types = Vec::with_capacity(v_fields.len());
+                    LLVMGetStructElementTypes(alloc.0, types.as_mut_ptr());
+                    types.set_len(v_fields.len());*/
+                    let value = LLVMBuildLoad2(self.builder, ty.clone().into(), ptr, "\0".as_ptr() as *const _); 
+                    return Ok((ty, value))
                 } else {
                     return Err(CodeGenError {
                         kind: ErrorKind::MismatchedTypes,
-                        message: "Exprected struct type".to_string(),
+                        message: "Exprected struct type to set a field".to_string(),
                         line,
                     }.into())
                 }
             }
 
-            let index = self.match_expr(index.into_inner())?;
+            //let index = self.match_expr(index.into_inner())?;
+            let mut v_indices = Vec::with_capacity(indices.len());
+            for index in indices {
+                v_indices.push(self.match_expr(index)?.1);
+            }
             let element_type = LLVMGetElementType(var.0);
             //let mut indices = [index, LLVMConstInt(LLVMInt64TypeInContext(self.context), 0, 0)];
             let mut indices = [zero, zero];
@@ -1062,7 +1144,7 @@ impl CodeGen {
             }.clone();
             let ptr = LLVMBuildInBoundsGEP2(self.builder, vec_ty.0, var.2, indices.as_mut_ptr(), 2, "\0".as_ptr() as *const _);
             let malloc = LLVMBuildLoad2(self.builder, LLVMPointerType(element_type, 0), ptr, "\0".as_ptr() as *const _);
-            let mut indices = [index.1];
+            //let mut indices = [index.1];
             let ptr = LLVMBuildInBoundsGEP2(self.builder, element_type, malloc, indices.as_mut_ptr(), 1, "\0".as_ptr() as *const _);
             let load = LLVMBuildLoad2(self.builder, element_type, ptr, "\0".as_ptr() as *const _);
             // TODO var.1 isnt inner element type, fix later
