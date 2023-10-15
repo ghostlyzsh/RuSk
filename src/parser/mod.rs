@@ -439,6 +439,9 @@ impl Parser {
                 "boolean" => {
                     tt = Type::Boolean;
                 }
+                "char" => {
+                    tt = Type::Char;
+                }
                 t => {
                     //return Err(self.error(1002, format!("Invalid type \"{}\"", t), None, 0, token));
                     tt = Type::Struct(Ident(t.to_string()));
@@ -1070,6 +1073,7 @@ pub enum Type {
     Number,
     Integer,
     Boolean,
+    Char,
     List(P<Type>),
     Pointer(P<Type>),
     Struct(Ident),

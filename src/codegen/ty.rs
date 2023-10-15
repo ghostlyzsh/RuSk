@@ -156,6 +156,9 @@ impl From<PType> for Type {
             PType::Boolean => {
                 Self::Char
             }
+            PType::Char => {
+                Self::Char
+            }
             PType::List(ty) => {
                 Self::Pointer(P(ty.into_inner().into()))
             }
