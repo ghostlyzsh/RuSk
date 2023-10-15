@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use llvm_sys::{prelude::*, core::*, LLVMTypeKind};
+use llvm_sys::{prelude::*, core::*};
 
 use crate::parser::{ptr::P, Type as PType};
 
@@ -88,31 +88,6 @@ impl PartialEq<Type> for Type {
             }
             //(Pointer, Pointer) => true,
             _ => false,
-        }
-    }
-}
-impl From<LLVMTypeRef> for Type {
-    fn from(ty: LLVMTypeRef) -> Self {
-        unsafe {
-            let kind = LLVMGetTypeKind(ty);
-            match kind {
-                LLVMTypeKind::LLVMIntegerTypeKind => {
-                    let width = LLVMGetIntTypeWidth(ty);
-                    if width == 64 {
-                        Self::Integer
-                    } else if width == 8 {
-                        Self::Char
-                    } else {
-                        panic!("Unexpected LLVM type");
-                    }
-                }
-                LLVMTypeKind::LLVMDoubleTypeKind => Self::Float,
-                LLVMTypeKind::LLVMVoidTypeKind => Self::Null,
-                LLVMTypeKind::LLVMPointerTypeKind => Self::Pointer(P(Type::Null)),
-                _ => {
-                    panic!("Unexpected LLVM type {:?}", kind);
-                }
-            }
         }
     }
 }

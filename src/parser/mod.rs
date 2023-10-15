@@ -996,7 +996,7 @@ pub enum ExprKind {
     Function(Ident, Vec<P<Expr>>, P<Block>, Option<Type>),
     Struct(Ident, Vec<(Ident, Type)>),
     StructInit(Ident, Vec<(Ident, Expr)>),
-    Switch(P<Expr>, Vec<Arm>),
+    //Switch(P<Expr>, Vec<Arm>),
     Native(Ident, Vec<P<Expr>>, bool, Option<P<Expr>>),
     Block(P<Block>),
     Var(Variable),
@@ -1004,6 +1004,7 @@ pub enum ExprKind {
     Lit(Literal),
     Ident(Ident),
     Arg(Ident, Type),
+    Cast(P<Expr>, Type),
     Type(Type),
 
     // (basically) effects
