@@ -209,10 +209,12 @@ impl CodeGen {
             }
         }
         let ret_type;
+        let ret_type_type: Type;
         if let Some(ty) = ret {
-            let ty: Type = ty.into();
-            ret_type = ty.into();
+            ret_type_type = ty.into();
+            ret_type = ret_type_type.clone().into();
         } else {
+            ret_type_type = Type::Null;
             ret_type = LLVMVoidTypeInContext(self.context);
         }
         let function_type = LLVMFunctionType(ret_type, f_args.as_mut_ptr(), f_args.len() as u32, 0);
@@ -243,8 +245,7 @@ impl CodeGen {
             }
         }
         let ret_val = self.gen_block(block.clone().into_inner())?;
-        if ret_type != LLVMVoidTypeInContext(self.context) &&
-            LLVMGetTypeKind(LLVMTypeOf(ret_val.1)) != LLVMGetTypeKind(ret_type) {
+        if ret_type_type != ret_val.0 {
             return Err(CodeGenError {
                 kind: ErrorKind::MismatchedTypes,
                 message: format!("Mismatched return type on function {}", name.0),
