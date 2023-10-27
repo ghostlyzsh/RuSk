@@ -322,7 +322,7 @@ impl Lexer {
         let mut ident = String::new();
         let mut c = [0u8; 1];
         self.file.read(&mut c).unwrap();
-        while c[0].is_ascii_alphabetic() || c[0] == b'\'' || c[0] == b'_' {
+        while c[0].is_ascii_alphanumeric() || c[0] == b'\'' || c[0] == b'_' {
             ident.push(c[0] as char);
             self.file.read(&mut c).unwrap();
         }
