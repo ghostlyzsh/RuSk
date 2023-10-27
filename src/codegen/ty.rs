@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::HashMap;
 
 use llvm_sys::{prelude::*, core::*};
@@ -129,7 +130,7 @@ impl From<PType> for Type {
                 Self::Integer
             }
             PType::Boolean => {
-                Self::Char
+                Self::Boolean
             }
             PType::Char => {
                 Self::Char
@@ -144,5 +145,25 @@ impl From<PType> for Type {
                 Self::Struct(name.0, HashMap::new())
             }
         }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let debug = format!("{:?}", self);
+        let debug = &debug;
+        let name = match self {
+            Type::Integer => "int",
+            Type::Text(_) => "text",
+            Type::Float => "num",
+            Type::Boolean => "boolean",
+            Type::Null => "none",
+            Type::Char => "char",
+            Type::I32 => "i32",
+            Type::I1 => "i1",
+            _ => debug,
+        };
+
+        write!(f, "{}", name)
     }
 }

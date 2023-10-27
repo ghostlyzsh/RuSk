@@ -228,12 +228,12 @@ impl CodeGen {
         for (i, arg) in args.clone().iter().enumerate() {
             if let ExprKind::Arg(name, ty) = arg.kind.clone() {
                 let ty: Type = ty.into();
-                let arg_ty = ty.into();
+                let arg_ty = ty.clone().into();
 
                 let alloca = LLVMBuildAlloca(self.builder, arg_ty, (name.0.clone() + "\0").as_ptr() as *const _);
                 LLVMBuildStore(self.builder, LLVMGetParam(function, i as u32), alloca);
                 // TODO replace with list logic
-                self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, Type::Pointer(P(Type::Null)), alloca));
+                self.scopes.last_mut().unwrap().insert(name.0.clone(), (arg_ty, ty, alloca));
             } else {
                 return Err(CodeGenError {
                     kind: ErrorKind::InvalidArgs,
@@ -1356,7 +1356,7 @@ impl CodeGen {
             return Err(CodeGenError {
                 kind: ErrorKind::MismatchedTypes,
                 line: e_lhs.line,
-                message: "Mismatching types".to_string(),
+                message: format!("Mismatching types {} and {}", lhs.0, rhs.0),
             }.into())
         }
     }

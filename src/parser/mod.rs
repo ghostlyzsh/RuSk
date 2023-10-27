@@ -76,6 +76,8 @@ impl Parser {
                     self.add_or_pop_statement()
                 } else if s == "struct" {
                     self.struct_statement()
+                } else if s == "import" {
+                    self.import_statement()
                 } else {
                     self.call_expression()
                 }
@@ -104,6 +106,33 @@ impl Parser {
                 self.call_expression()
             }
         }
+    }
+    pub fn import_statement(&mut self) -> Result<Expr> {
+        let token = self.tokens.read()?;
+        if let TokenType::Ident(i) = token.clone().token_type {
+            if i == "import" {
+                if let TokenType::Ident(module) = self.tokens.peek()?.token_type {
+                    self.tokens.read()?;
+
+                    let mut modules = vec![P(Expr { kind: ExprKind::Ident(Ident(module)), line: token.line })];
+                    while TokenType::Ident("from".to_string()) == self.tokens.peek()?.token_type {
+                        self.tokens.read()?;
+
+                        if let TokenType::Ident(module) = self.tokens.peek()?.token_type {
+                            self.tokens.read()?;
+                            modules.push(P(Expr { kind: ExprKind::Ident(Ident(module)), line: token.line }));
+                        } else {
+                            return Err(self.error(1005, "Expected module name".to_string(), None, 0, token))
+                        }
+                    }
+                    modules.reverse();
+                    return Ok(Expr { kind: ExprKind::Import(modules), line: token.line })
+                } else {
+                    return Err(self.error(1005, "Expected module name".to_string(), None, 0, token))
+                }
+            }
+        }
+        Err(anyhow!("Parser Error: import"))
     }
     pub fn function_statement(&mut self) -> Result<Expr> {
         let token = self.tokens.read()?;
@@ -988,6 +1017,7 @@ pub struct Expr {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum ExprKind {
+    Import(Vec<P<Expr>>),
     Call(Ident, Vec<P<Expr>>),
     Binary(BinOp, P<Expr>, P<Expr>),
     Unary(UnOp, P<Expr>),
