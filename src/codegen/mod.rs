@@ -1162,19 +1162,15 @@ impl CodeGen {
                 line,
             }.into())
         }
-        //let mut arg_types = Vec::with_capacity(param_num as usize);
-        /*if !function_type.3 {
-            if param_num != args.len() as u32 {
+        if !function_type.3 {
+            if function_type.1.len() != args.len() {
                 return Err(CodeGenError {
                     kind: ErrorKind::InvalidArgs,
                     message: "Wrong number of arguments in function call".to_string(),
                     line,
                 }.into())
             }
-
-            LLVMGetParamTypes(function_type.0, arg_types.as_mut_ptr());
-            arg_types.set_len(param_num as usize);
-        }*/
+        }
 
         let mut argsV = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -1195,7 +1191,7 @@ impl CodeGen {
                     arg.1 = LLVMBuildInBoundsGEP2(self.builder, LLVMPointerType(element_type, 0), arg.1, &mut int, 0, "\0".as_ptr() as *const _);
                 }
 
-                if arg.0 != function_type.1[i] {
+                if !(arg.0 == function_type.1[i] || (arg.0.surface_eq(&Type::Text(0)) && function_type.1[i] == Type::Pointer(P(Type::Char)))) {
                     return Err(CodeGenError {
                         kind: ErrorKind::MismatchedTypes,
                         message: format!("Argument {} has wrong type", i),

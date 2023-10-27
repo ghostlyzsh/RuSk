@@ -87,7 +87,7 @@ impl PartialEq<Type> for Type {
                 }
                 equal
             }
-            //(Pointer, Pointer) => true,
+            (Pointer(a), Pointer(b)) => a.into_inner() == b.into_inner(),
             _ => false,
         }
     }
@@ -152,16 +152,19 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let debug = format!("{:?}", self);
         let debug = &debug;
-        let name = match self {
-            Type::Integer => "int",
-            Type::Text(_) => "text",
-            Type::Float => "num",
-            Type::Boolean => "boolean",
-            Type::Null => "none",
-            Type::Char => "char",
-            Type::I32 => "i32",
-            Type::I1 => "i1",
-            _ => debug,
+        let name: String = match self {
+            Type::Integer => "int".to_string(),
+            Type::Text(_) => "text".to_string(),
+            Type::Float => "num".to_string(),
+            Type::Boolean => "boolean".to_string(),
+            Type::Null => "none".to_string(),
+            Type::Char => "char".to_string(),
+            Type::I32 => "i32".to_string(),
+            Type::I1 => "i1".to_string(),
+            Type::Pointer(t) => {
+                format!("{} pointer", t)
+            }
+            _ => debug.to_string(),
         };
 
         write!(f, "{}", name)
